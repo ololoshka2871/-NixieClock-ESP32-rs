@@ -1,0 +1,17 @@
+[package]
+name = "esp32-c3-debug"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rtic = { git = "https://github.com/rtic-rs/rtic.git", rev = "d251ba717393a73e9ea26a34fe738e3baec477d2", features = ["riscv-esp32c3-backend"] }
+rtic-monotonics = { version = "2", features = ["esp32c3-systimer"] }
+esp-hal = { version = "0.20.1", features = ["esp32c3"] }
+esp-backtrace = { version = "0.14", features = [
+    "esp32c3",
+    "panic-handler",
+    "exception-handler",
+    "println",
+] }
+esp32c3 = { version = "0.25", features = ["critical-section"] }
+esp-println = { version = "0.11", features = ["esp32c3"] }
