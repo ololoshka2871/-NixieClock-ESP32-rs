@@ -4,14 +4,35 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rtic = { git = "https://github.com/rtic-rs/rtic.git", rev = "d251ba717393a73e9ea26a34fe738e3baec477d2", features = ["riscv-esp32c3-backend"] }
-rtic-monotonics = { version = "2", features = ["esp32c3-systimer"] }
-esp-hal = { version = "0.20.1", features = ["esp32c3"] }
+rtic = { git = "https://github.com/rtic-rs/rtic.git", rev = "d251ba717393a73e9ea26a34fe738e3baec477d2", features = [
+    "riscv-esp32c3-backend",
+] }
+rtic-monotonics = { version = "2", features = ["esp32c3-systimer", "defmt"] }
+rtic-sync = { version = "1.0.2", features = ["defmt-03"] }
+
+esp-hal = { version = "0.20.1", features = ["esp32c3", "defmt"] }
 esp-backtrace = { version = "0.14", features = [
     "esp32c3",
     "panic-handler",
     "exception-handler",
-    "println",
+    "defmt",
 ] }
 esp32c3 = { version = "0.25", features = ["critical-section"] }
-esp-println = { version = "0.11", features = ["esp32c3"] }
+esp-println = { version = "0.11", features = [
+    "esp32c3",
+    "log",
+    "defmt-espflash",
+] }
+#esp-wifi = { version = "0.9",  default-features = false, features = ["defmt", "esp32c3", "ble", "async"] }
+
+# defmt
+defmt = { version = "0.3.8" }
+defmt-macros = { version = "0.3" }
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+opt-level = 3
+lto = 'fat'
+overflow-checks = false

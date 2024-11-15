@@ -4,9 +4,9 @@
 use rtic_monotonics::esp32c3::prelude::*;
 esp32c3_systimer_monotonic!(Mono);
 use esp_hal as _;
-use esp_println::println;
 
 use esp_backtrace as _;
+use esp_println as _;
 
 #[rtic::app(device = esp32c3, dispatchers = [])]
 mod app {
@@ -20,7 +20,7 @@ mod app {
 
     #[init]
     fn init(cx: init::Context) -> (Shared, Local) {
-        println!("init");
+        defmt::info!("init");
         let timer = cx.device.SYSTIMER;
 
         Mono::start(timer);
@@ -34,22 +34,22 @@ mod app {
 
     #[task]
     async fn foo(_cx: foo::Context) {
-        println!("hello from foo");
+        defmt::info!("hello from foo");
         Mono::delay(2_u64.secs()).await;
-        println!("bye from foo");
+        defmt::info!("bye from foo");
     }
 
     #[task]
     async fn bar(_cx: bar::Context) {
-        println!("hello from bar");
+        defmt::info!("hello from bar");
         Mono::delay(3_u64.secs()).await;
-        println!("bye from bar");
+        defmt::info!("bye from bar");
     }
 
     #[task]
     async fn baz(_cx: baz::Context) {
-        println!("hello from baz");
+        defmt::info!("hello from baz");
         Mono::delay(4_u64.secs()).await;
-        println!("bye from baz");
+        defmt::info!("bye from baz");
     }
 }
