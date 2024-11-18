@@ -26,8 +26,6 @@ mod app {
         Mono::start(timer);
 
         foo::spawn().unwrap();
-        bar::spawn().unwrap();
-        baz::spawn().unwrap();
 
         (Shared {}, Local {})
     }
@@ -37,19 +35,5 @@ mod app {
         defmt::info!("hello from foo");
         Mono::delay(2_u64.secs()).await;
         defmt::info!("bye from foo");
-    }
-
-    #[task]
-    async fn bar(_cx: bar::Context) {
-        defmt::info!("hello from bar");
-        Mono::delay(3_u64.secs()).await;
-        defmt::info!("bye from bar");
-    }
-
-    #[task]
-    async fn baz(_cx: baz::Context) {
-        defmt::info!("hello from baz");
-        Mono::delay(4_u64.secs()).await;
-        defmt::info!("bye from baz");
     }
 }

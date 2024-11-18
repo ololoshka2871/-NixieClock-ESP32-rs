@@ -23,7 +23,6 @@ esp-println = { version = "0.11", features = [
     "log",
     "defmt-espflash",
 ] }
-#esp-wifi = { version = "0.9",  default-features = false, features = ["defmt", "esp32c3", "ble", "async"] }
 
 # defmt
 defmt = { version = "0.3.8" }
