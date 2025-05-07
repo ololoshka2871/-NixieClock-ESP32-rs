@@ -51,11 +51,11 @@ pub async fn start_wifi(
         net_seed,
     );
 
-    spawner.spawn(connection_task(controller)).ok();
-    spawner.spawn(net_task(runner)).ok();
+    spawner.must_spawn(connection_task(controller));
+    spawner.must_spawn(net_task(runner));
 
     wait_for_connection(stack).await;
-    spawner.spawn(dhcp_server(stack)).ok();
+    spawner.must_spawn(dhcp_server(stack));
 
     Ok(stack)
 }

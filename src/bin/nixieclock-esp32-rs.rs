@@ -20,30 +20,21 @@ use nixieclock_esp32_rs as lib;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    // generator version: 0.3.1
-
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    let timer0 = TimerGroup::new(peripherals.TIMG1);
-    esp_hal_embassy::init(timer0.timer0);
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
+    esp_hal_embassy::init(timg1.timer0);
 
     info!("Embassy initialized!");
 
-    let timer1 = TimerGroup::new(peripherals.TIMG0);
-    // let _init = esp_wifi::init(
-    //     timer1.timer0,
-    //     esp_hal::rng::Rng::new(peripherals.RNG),
-    //     peripherals.RADIO_CLK,
-    // )
-    // .unwrap();
-
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
     let rng = Rng::new(peripherals.RNG);
     let esp_wifi_ctrl = &*lib::mk_static!(
         EspWifiController<'static>,
-        esp_wifi::init(timer1.timer0, rng.clone(), peripherals.RADIO_CLK,).unwrap()
+        esp_wifi::init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK,).unwrap()
     );
 
     let stack = lib::wifi::start_wifi(esp_wifi_ctrl, peripherals.WIFI, rng, &spawner)

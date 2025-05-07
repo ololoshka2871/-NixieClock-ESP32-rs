@@ -11,7 +11,7 @@ impl AppBuilder for Application {
     fn build_app(self) -> picoserve::Router<Self::PathRouter> {
         picoserve::Router::new().route(
             "/",
-            routing::get_service(File::html(include_str!("index.html"))),
+            routing::get_service(File::html(include_str!("html/index.html"))),
         )
     }
 }
