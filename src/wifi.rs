@@ -136,5 +136,7 @@ async fn dhcp_server(stack: Stack<'static>) {
         end: Ipv4Addr::new(octets[0], octets[1], octets[2], 250),
         leases: Default::default(),
     };
-    esp_hal_dhcp_server::run_dhcp_server(stack, config, &mut leaser).await.expect("Failed to start DHCP server");
+    esp_hal_dhcp_server::run_dhcp_server(stack, config, &mut leaser)
+        .await
+        .expect("Failed to start DHCP server");
 }
