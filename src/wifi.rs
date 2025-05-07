@@ -7,9 +7,7 @@
 //! On Android you might need to choose _Keep Accesspoint_ when it tells you the WiFi has no internet connection, Chrome might not want to load the URL - you can use a shell and try `curl` and `ping`
 
 use core::net::Ipv4Addr;
-use core::str::FromStr;
 
-use anyhow::anyhow;
 use embassy_executor::Spawner;
 use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
 use embassy_time::{Duration, Timer};
@@ -27,8 +25,6 @@ const PASSWORD: &str = "ClockPassword937";
 // Unlike Station mode, You can give any IP range(private) that you like
 // IP Address/Subnet mask eg: STATIC_IP=192.168.13.37/24
 const STATIC_IP: Ipv4Cidr = Ipv4Cidr::new(Ipv4Addr::new(192, 168, 13, 37), 24);
-// Gateway IP eg: GATEWAY_IP="192.168.13.37"
-const GATEWAY_IP: &str = "192.168.13.37";
 
 pub async fn start_wifi(
     esp_wifi_ctrl: &'static EspWifiController<'static>,
@@ -40,26 +36,12 @@ pub async fn start_wifi(
     let wifi_interface = interfaces.ap;
     let net_seed = rng.random() as u64 | ((rng.random() as u64) << 32);
 
-    // Parse STATIC_IP
-    let ip_addr = STATIC_IP;
-
-    // Parse GATEWAY_IP
-    let gateway = Ipv4Addr::from_str(GATEWAY_IP)
-        .map_err(|_| anyhow!("Invalid GATEWAY_IP: {}", GATEWAY_IP))?;
-
     // Create Network config with IP details
     let net_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
-        address: ip_addr,
-        gateway: Some(gateway),
+        address: STATIC_IP,
+        gateway: None,
         dns_servers: Default::default(),
     });
-
-    // alternate approach
-    // let net_config = embassy_net::Config::ipv4_static(StaticConfigV4 {
-    //     address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 2, 1), 24),
-    //     gateway: Some(Ipv4Address::from_bytes(&[192, 168, 2, 1])),
-    //     dns_servers: Default::default(),
-    // });
 
     // Init network stack
     let (stack, runner) = embassy_net::new(
@@ -73,6 +55,7 @@ pub async fn start_wifi(
     spawner.spawn(net_task(runner)).ok();
 
     wait_for_connection(stack).await;
+    spawner.spawn(dhcp_server(stack)).ok();
 
     Ok(stack)
 }
@@ -86,7 +69,12 @@ async fn wait_for_connection(stack: Stack<'_>) {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    println!("Connect to the AP `{}:{}` and point your browser to http://{}/", SSID, PASSWORD, STATIC_IP.address());
+    println!(
+        "Connect to the AP `{}:{}` and point your browser to http://{}/",
+        SSID,
+        PASSWORD,
+        STATIC_IP.address()
+    );
     while !stack.is_config_up() {
         Timer::after(Duration::from_millis(100)).await
     }
@@ -128,4 +116,25 @@ async fn connection_task(mut controller: WifiController<'static>) {
 #[embassy_executor::task]
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
+}
+
+#[embassy_executor::task]
+async fn dhcp_server(stack: Stack<'static>) {
+    let config = esp_hal_dhcp_server::structs::DhcpServerConfig {
+        ip: STATIC_IP.address(),
+        lease_time: Duration::from_secs(3600),
+        gateways: &[],
+        subnet: Some(STATIC_IP.netmask()),
+        dns: &[],
+        use_captive_portal: false,
+    };
+
+    let octets = STATIC_IP.address().octets();
+
+    let mut leaser = esp_hal_dhcp_server::simple_leaser::SimpleDhcpLeaser {
+        start: Ipv4Addr::new(octets[0], octets[1], octets[2], 200),
+        end: Ipv4Addr::new(octets[0], octets[1], octets[2], 250),
+        leases: Default::default(),
+    };
+    esp_hal_dhcp_server::run_dhcp_server(stack, config, &mut leaser).await.expect("Failed to start DHCP server");
 }
