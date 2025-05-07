@@ -11,7 +11,7 @@
             "request": "launch",
             "name": "Launch",
             "cwd": "${workspaceFolder}",
-            "chip": "esp32c3",
+            "chip": "esp32",
             "flashingConfig": {
                 "flashingEnabled": true,
                 "haltAfterReset": true,
@@ -25,7 +25,7 @@
                     "programBinary": "target/riscv32imc-unknown-none-elf/debug/${workspaceFolderBasename}",
                     // svdFiles describe the hardware register names off the esp peripherals, such as the LEDC peripheral. 
                     // They can be downloaded seperatly @ https://github.com/espressif/svd/tree/main/svd
-                    "svdFile": "esp32c3.svd"
+                    "svdFile": "esp32.svd"
                 }
             ]
         },
@@ -34,12 +34,12 @@
             "request": "attach",
             "name": "Attach",
             "cwd": "${workspaceFolder}",
-            "chip": "esp32c3",    
+            "chip": "esp32",    
             "coreConfigs": [
                 {
                     "coreIndex": 0,
                     "programBinary": "target/riscv32imc-unknown-none-elf/debug/${workspaceFolderBasename}",
-                    "svdFile": "esp32c3.svd"
+                    "svdFile": "esp32.svd"
                 }
             ]
         }
