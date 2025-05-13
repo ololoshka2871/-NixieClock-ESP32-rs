@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
 use embassy_executor::Spawner;
 use esp_hal::clock::CpuClock;
 use esp_hal::rng::Rng;
@@ -28,13 +27,13 @@ async fn main(spawner: Spawner) {
     let timg1 = TimerGroup::new(peripherals.TIMG1);
     esp_hal_embassy::init(timg1.timer0);
 
-    info!("Embassy initialized!");
+    defmt::info!("Embassy initialized!");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let rng = Rng::new(peripherals.RNG);
     let esp_wifi_ctrl = &*lib::mk_static!(
         EspWifiController<'static>,
-        esp_wifi::init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK,).unwrap()
+        esp_wifi::init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap()
     );
 
     let stack = lib::wifi::start_wifi(esp_wifi_ctrl, peripherals.WIFI, rng, &spawner)
@@ -50,5 +49,5 @@ async fn main(spawner: Spawner) {
             web_app.config,
         ));
     }
-    info!("Web server started...");
+    defmt::info!("Web server started...");
 }

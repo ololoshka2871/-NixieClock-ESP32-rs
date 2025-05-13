@@ -12,8 +12,6 @@ use embassy_executor::Spawner;
 use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
 use embassy_time::{Duration, Timer};
 use esp_hal::rng::Rng;
-use esp_println as _;
-use esp_println::println;
 use esp_wifi::wifi::{self, WifiController, WifiDevice, WifiEvent, WifiState};
 use esp_wifi::EspWifiController;
 
@@ -61,7 +59,7 @@ pub async fn start_wifi(
 }
 
 async fn wait_for_connection(stack: Stack<'_>) {
-    println!("Waiting for link to be up");
+    defmt::info!("Waiting for link to be up");
     loop {
         if stack.is_link_up() {
             break;
@@ -69,7 +67,7 @@ async fn wait_for_connection(stack: Stack<'_>) {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    println!(
+    defmt::info!(
         "Connect to the AP `{}:{}` and point your browser to http://{}/",
         SSID,
         PASSWORD,
@@ -80,13 +78,13 @@ async fn wait_for_connection(stack: Stack<'_>) {
     }
     stack
         .config_v4()
-        .inspect(|c| println!("ipv4 config: {c:?}"));
+        .inspect(|c| defmt::info!("ipv4 config: {}", defmt::Debug2Format(&c)));
 }
 
 #[embassy_executor::task]
 async fn connection_task(mut controller: WifiController<'static>) {
-    println!("start connection task");
-    println!("Device capabilities: {:?}", controller.capabilities());
+    defmt::info!("start connection task");
+    defmt::info!("Device capabilities: {}", defmt::Debug2Format(&controller.capabilities()));
     loop {
         match esp_wifi::wifi::wifi_state() {
             WifiState::ApStarted => {
@@ -106,9 +104,9 @@ async fn connection_task(mut controller: WifiController<'static>) {
                 ..Default::default()
             });
             controller.set_configuration(&ap_config).unwrap();
-            println!("Starting wifi");
+            defmt::info!("Starting wifi");
             controller.start_async().await.unwrap();
-            println!("Wifi started!");
+            defmt::info!("Wifi started!");
         }
     }
 }
