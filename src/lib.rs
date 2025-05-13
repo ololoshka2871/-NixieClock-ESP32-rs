@@ -2,6 +2,9 @@
 #![feature(impl_trait_in_assoc_type)]
 
 pub mod net;
+pub mod sensors;
+
+pub mod config;
 
 pub use net::{web, wifi};
 

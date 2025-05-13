@@ -1,0 +1,2 @@
+
+pub const MHZ_19_UART_BUTRATE: u32 = 9600;
