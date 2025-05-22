@@ -87,7 +87,8 @@ async fn main(spawner: Spawner) {
             Mutex::new(ds1307::Ds1307::new(i2c))
         );
 
-        spawner.must_spawn(sensor_reader(mhz19, clocks, one_wire_pin, one_wire_timer));
+        spawner.must_spawn(sensor_reader(mhz19, clocks));
+        spawner.must_spawn(temperature_task(one_wire_pin, one_wire_timer));
     };
 }
 
@@ -101,30 +102,7 @@ async fn sensor_reader(
         embassy_sync::blocking_mutex::raw::NoopRawMutex,
         ds1307::Ds1307<esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>>,
     >,
-    mut one_wire_pin: esp_hal::gpio::Flex<'static>,
-    mut microseconds_timer: esp_hal::timer::OneShotTimer<'static, esp_hal::Blocking>,
 ) {
-    use embassy_time::Delay;
-
-    one_wire_pin.set_as_open_drain(esp_hal::gpio::Pull::None);
-    let mut one_wire_bus = onecable::OneWire::new(&mut one_wire_pin);
-
-    // scan bus
-    let sensor = match one_wire_bus.search_rom_iter(&mut microseconds_timer).next() {
-        Some(rom) => {
-            defmt::info!("Found device with ROM: {}", defmt::Debug2Format(&rom));
-            onecable::ds18b20::DS18B20::try_from(rom)
-        }
-        None => {
-            defmt::error!("No devices found on the bus");
-            Err(onecable::FamilyCodeError::MismatchedFamilyCode {
-                expected: 0,
-                received: 0,
-            })
-        }
-    }
-    .ok();
-
     loop {
         let result = {
             let mut mhz19_guard = mhz19.lock().await;
@@ -154,17 +132,43 @@ async fn sensor_reader(
             }
         }
 
-        if let Some(sensor) = &sensor {
-            match sensor.read_temperature(&mut one_wire_bus, &mut microseconds_timer, &mut Delay) {
-                Ok(temp) => {
-                    defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
-                }
-                Err(e) => {
-                    defmt::error!("Error reading temperature: {}", defmt::Debug2Format(&e));
-                }
-            }
-        } else {
-            embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn temperature_task(
+    mut one_wire_pin: esp_hal::gpio::Flex<'static>,
+    mut microseconds_timer: esp_hal::timer::OneShotTimer<'static, esp_hal::Blocking>,
+) {
+    defmt::info!("Starting temperature task...");
+
+    one_wire_pin.set_as_open_drain(esp_hal::gpio::Pull::None);
+    let mut bus = onecable::OneWire::new(&mut one_wire_pin);
+    let mut delay = embassy_time::Delay;
+
+    // scan bus
+    let sensor = match bus.search_rom_iter(&mut delay).next() {
+        Some(rom) => {
+            defmt::info!("Found device with ROM: {}", defmt::Debug2Format(&rom));
+            onecable::ds18b20::DS18B20::try_from(rom).unwrap()
         }
+        None => {
+            defmt::error!("No devices found on the bus");
+            return;
+        }
+    };
+
+    loop {
+        match sensor.read_temperature(&mut bus, &mut delay, &mut embassy_time::Delay) {
+            Ok(temp) => {
+                defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
+            }
+            Err(e) => {
+                defmt::error!("Error reading temperature: {}", defmt::Debug2Format(&e));
+            }
+        }
+
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
     }
 }
