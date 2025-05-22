@@ -87,7 +87,7 @@ async fn main(spawner: Spawner) {
             Mutex::new(ds1307::Ds1307::new(i2c))
         );
 
-        spawner.must_spawn(sensor_reader(mhz19, one_wire_pin, one_wire_timer, clocks));
+        spawner.must_spawn(sensor_reader(mhz19, clocks, one_wire_pin, one_wire_timer));
     };
 }
 
@@ -97,12 +97,12 @@ async fn sensor_reader(
         embassy_sync::blocking_mutex::raw::NoopRawMutex,
         lib::sensors::mh_z19::MhZ19<esp_hal::uart::Uart<'static, esp_hal::Async>>,
     >,
-    mut one_wire_pin: esp_hal::gpio::Flex<'static>,
-    mut microseconds_timer: esp_hal::timer::OneShotTimer<'static, esp_hal::Blocking>,
     ds1307: &'static embassy_sync::mutex::Mutex<
         embassy_sync::blocking_mutex::raw::NoopRawMutex,
         ds1307::Ds1307<esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>>,
     >,
+    mut one_wire_pin: esp_hal::gpio::Flex<'static>,
+    mut microseconds_timer: esp_hal::timer::OneShotTimer<'static, esp_hal::Blocking>,
 ) {
     use embassy_time::Delay;
 
