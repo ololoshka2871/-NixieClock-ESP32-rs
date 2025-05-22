@@ -74,7 +74,20 @@ async fn main(spawner: Spawner) {
         let one_wire_pin = esp_hal::gpio::Flex::new(peripherals.GPIO4);
         let one_wire_timer = esp_hal::timer::OneShotTimer::new(timg0.timer1);
 
-        spawner.must_spawn(sensor_reader(mhz19, one_wire_pin, one_wire_timer));
+        let (sda_pin, scl_pin) = (peripherals.GPIO21, peripherals.GPIO22);
+        let i2c = esp_hal::i2c::master::I2c::new(
+            peripherals.I2C0,
+            esp_hal::i2c::master::Config::default(),
+        )
+        .unwrap()
+        .with_sda(sda_pin)
+        .with_scl(scl_pin);
+        let clocks = &*lib::mk_static!(
+            Mutex<NoopRawMutex, ds1307::Ds1307<esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>>>,
+            Mutex::new(ds1307::Ds1307::new(i2c))
+        );
+
+        spawner.must_spawn(sensor_reader(mhz19, one_wire_pin, one_wire_timer, clocks));
     };
 }
 
@@ -86,6 +99,10 @@ async fn sensor_reader(
     >,
     mut one_wire_pin: esp_hal::gpio::Flex<'static>,
     mut microseconds_timer: esp_hal::timer::OneShotTimer<'static, esp_hal::Blocking>,
+    ds1307: &'static embassy_sync::mutex::Mutex<
+        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+        ds1307::Ds1307<esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>>,
+    >,
 ) {
     use embassy_time::Delay;
 
@@ -123,6 +140,20 @@ async fn sensor_reader(
             }
         }
 
+        {
+            use ds1307::Rtcc;
+
+            let mut guard = ds1307.lock().await;
+            match guard.time() {
+                Ok(time) => {
+                    defmt::info!("Time: {}", defmt::Display2Format(&time));
+                }
+                Err(e) => {
+                    defmt::error!("Error reading time: {}", defmt::Debug2Format(&e));
+                }
+            }
+        }
+
         if let Some(sensor) = &sensor {
             match sensor.read_temperature(&mut one_wire_bus, &mut microseconds_timer, &mut Delay) {
                 Ok(temp) => {
@@ -132,8 +163,8 @@ async fn sensor_reader(
                     defmt::error!("Error reading temperature: {}", defmt::Debug2Format(&e));
                 }
             }
+        } else {
+            embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
         }
-
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
     }
 }

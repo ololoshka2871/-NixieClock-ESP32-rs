@@ -60,6 +60,7 @@ esp-hal-dhcp-server = "0.2.5"
 #mh-z19c = { version = "0.3.0", default-features = false }
 mh-z19 = "0.3.3"
 onecable = "0.2.0"
+ds1307 = "0.6.0"
 
 # defmt
 defmt = { version = "1" }
