@@ -72,8 +72,7 @@ async fn main(spawner: Spawner) {
         );
 
         let one_wire_pin = esp_hal::gpio::Flex::new(peripherals.GPIO4);
-        let one_wire_timer = esp_hal::timer::OneShotTimer::new(timg0.timer1);
-
+        
         let (sda_pin, scl_pin) = (peripherals.GPIO21, peripherals.GPIO22);
         let i2c = esp_hal::i2c::master::I2c::new(
             peripherals.I2C0,
@@ -88,7 +87,7 @@ async fn main(spawner: Spawner) {
         );
 
         spawner.must_spawn(sensor_reader(mhz19, clocks));
-        spawner.must_spawn(temperature_task(one_wire_pin, one_wire_timer));
+        spawner.must_spawn(temperature_task(one_wire_pin));
     };
 }
 
@@ -137,30 +136,31 @@ async fn sensor_reader(
 }
 
 #[embassy_executor::task]
-async fn temperature_task(
-    mut one_wire_pin: esp_hal::gpio::Flex<'static>,
-    mut microseconds_timer: esp_hal::timer::OneShotTimer<'static, esp_hal::Blocking>,
-) {
+async fn temperature_task(mut one_wire_pin: esp_hal::gpio::Flex<'static>) {
     defmt::info!("Starting temperature task...");
 
     one_wire_pin.set_as_open_drain(esp_hal::gpio::Pull::None);
     let mut bus = onecable::OneWire::new(&mut one_wire_pin);
-    let mut delay = embassy_time::Delay;
 
     // scan bus
-    let sensor = match bus.search_rom_iter(&mut delay).next() {
-        Some(rom) => {
-            defmt::info!("Found device with ROM: {}", defmt::Debug2Format(&rom));
-            onecable::ds18b20::DS18B20::try_from(rom).unwrap()
-        }
-        None => {
-            defmt::error!("No devices found on the bus");
-            return;
+    let sensor = {
+        loop {
+            match bus.search_rom_iter(&mut embassy_time::Delay).next() {
+                Some(rom) => {
+                    defmt::info!("Found device with ROM: {}", defmt::Debug2Format(&rom));
+                    break onecable::ds18b20::DS18B20::try_from(rom).unwrap();
+                }
+                None => {
+                    defmt::error!("No 1-Wire devices found on the bus");
+                    continue;
+                }
+            }
         }
     };
 
     loop {
-        match sensor.read_temperature(&mut bus, &mut delay, &mut embassy_time::Delay) {
+        match sensor.read_temperature(&mut bus, &mut embassy_time::Delay, &mut embassy_time::Delay)
+        {
             Ok(temp) => {
                 defmt::info!("Temperature: {} °C", temp.to_num::<f32>());
             }

@@ -9,20 +9,16 @@
 use core::net::Ipv4Addr;
 
 use embassy_executor::Spawner;
-use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
+use embassy_net::{Runner, Stack, StackResources, StaticConfigV4};
 use embassy_time::{Duration, Timer};
 use esp_hal::rng::Rng;
 use esp_wifi::wifi::{self, WifiController, WifiDevice, WifiEvent, WifiState};
 use esp_wifi::EspWifiController;
 
-use crate::mk_static;
-
-const SSID: &str = "NixieClock";
-const PASSWORD: &str = "ClockPassword937";
-
-// Unlike Station mode, You can give any IP range(private) that you like
-// IP Address/Subnet mask eg: STATIC_IP=192.168.13.37/24
-const STATIC_IP: Ipv4Cidr = Ipv4Cidr::new(Ipv4Addr::new(192, 168, 13, 37), 24);
+use crate::{
+    config::{PASSWORD, SSID, STATIC_IP},
+    mk_static,
+};
 
 pub async fn start_wifi(
     esp_wifi_ctrl: &'static EspWifiController<'static>,
@@ -84,7 +80,10 @@ async fn wait_for_connection(stack: Stack<'_>) {
 #[embassy_executor::task]
 async fn connection_task(mut controller: WifiController<'static>) {
     defmt::info!("start connection task");
-    defmt::info!("Device capabilities: {}", defmt::Debug2Format(&controller.capabilities()));
+    defmt::info!(
+        "Device capabilities: {}",
+        defmt::Debug2Format(&controller.capabilities())
+    );
     loop {
         match esp_wifi::wifi::wifi_state() {
             WifiState::ApStarted => {
