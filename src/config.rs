@@ -15,3 +15,7 @@ pub const MHZ_19_UART_BUTRATE: u32 = 9600;
 pub const V12_DEVIDER: (f32, f32) = (24000.0, 1000.0); 
 pub const V5_DEVIDER: (f32, f32) = (9100.0, 1000.0); 
 pub const V3V3_DEVIDER: (f32, f32) = (4700.0, 1000.0); 
+
+//-----------------------------------------------------------------------------
+
+pub const NIXIE_CLOCK_TIMER_PERIOD_US: u64 = 100;

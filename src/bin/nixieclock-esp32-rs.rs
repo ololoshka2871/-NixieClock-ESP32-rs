@@ -1,8 +1,17 @@
 #![no_std]
 #![no_main]
 
+use core::cell::RefCell;
+
 use embassy_executor::Spawner;
-use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup, uart::Uart};
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
+use esp_hal::{
+    clock::CpuClock,
+    rng::Rng,
+    timer::{timg::TimerGroup, PeriodicTimer},
+    uart::Uart,
+    Blocking,
+};
 use esp_println as _;
 
 #[panic_handler]
@@ -14,6 +23,8 @@ extern crate alloc;
 
 use esp_wifi::EspWifiController;
 use nixieclock_esp32_rs as lib;
+
+//-----------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Default)]
 struct VoltageCalc {
@@ -33,6 +44,34 @@ impl lib::sensors::adc::VoltageCalculator<f32> for VoltageCalc {
         (raw_value as f32) * (0.8 / 4096.0) * ((self.r1 + self.r2) / self.r2)
     }
 }
+
+struct GlobalContext {
+    timer: PeriodicTimer<'static, Blocking>,
+
+    count: u64,
+}
+
+impl GlobalContext {
+    pub fn new(timer: PeriodicTimer<'static, Blocking>) -> Self {
+        Self { timer, count: 0 }
+    }
+
+    #[inline(always)]
+    pub fn clear_interrupt_flag(&mut self) {
+        self.timer.clear_interrupt();
+        self.count = self.count.wrapping_add(1);
+    }
+
+    pub fn get_count(&self) -> u64 {
+        self.count
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+static mut GLOBAL_CONTEXT: Option<CriticalSectionMutex<RefCell<GlobalContext>>> = None;
+
+//-----------------------------------------------------------------------------
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -121,6 +160,25 @@ async fn main(spawner: Spawner) {
         spawner.must_spawn(sensor_reader(mhz19, clocks, am));
         spawner.must_spawn(temperature_task(one_wire_pin));
     };
+
+    {
+        let mut timer = PeriodicTimer::new(timg0.timer1);
+        timer.set_interrupt_handler(esp_hal::interrupt::InterruptHandler::new(
+            timer_isr,
+            esp_hal::interrupt::Priority::Priority2,
+        ));
+        timer.enable_interrupt(true);
+        timer
+            .start(esp_hal::time::Duration::from_micros(
+                lib::config::NIXIE_CLOCK_TIMER_PERIOD_US,
+            ))
+            .unwrap();
+        unsafe {
+            GLOBAL_CONTEXT = Some(CriticalSectionMutex::new(RefCell::new(GlobalContext::new(
+                timer,
+            ))))
+        };
+    }
 }
 
 #[embassy_executor::task]
@@ -131,7 +189,7 @@ async fn sensor_reader(
     >,
     ds1307: &'static embassy_sync::mutex::Mutex<
         embassy_sync::blocking_mutex::raw::NoopRawMutex,
-        ds1307::Ds1307<esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>>,
+        ds1307::Ds1307<esp_hal::i2c::master::I2c<'static, Blocking>>,
     >,
     mut am: nixieclock_esp32_rs::sensors::adc::AnalogMeasurments<
         'static,
@@ -189,6 +247,16 @@ async fn sensor_reader(
             };
         }
 
+        {
+            #[allow(static_mut_refs)]
+            if let Some(ctx) = unsafe { &GLOBAL_CONTEXT } {
+                ctx.lock(|c| {
+                    let c = c.borrow().get_count();
+                    defmt::info!("Timer count: {}", c);
+                });
+            }
+        }
+
         let elapsed = start.elapsed();
 
         embassy_time::Timer::after(embassy_time::Duration::from_secs(1) - elapsed).await;
@@ -230,5 +298,16 @@ async fn temperature_task(mut one_wire_pin: esp_hal::gpio::Flex<'static>) {
         }
 
         embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+    }
+}
+
+extern "C" fn timer_isr() {
+    #[allow(static_mut_refs)]
+    if let Some(mutex) = unsafe { &GLOBAL_CONTEXT } {
+        mutex.lock(|ctx| {
+            ctx.borrow_mut().clear_interrupt_flag();
+        });
+    } else {
+        defmt::panic!("Timer context is not initialized!");
     }
 }
