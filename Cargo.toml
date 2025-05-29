@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = { version = "1", default-features = false }
+nb = "1.1.0"
 embassy-net = { version = "0.6.0", features = [
   "dhcpv4",
   "medium-ethernet",

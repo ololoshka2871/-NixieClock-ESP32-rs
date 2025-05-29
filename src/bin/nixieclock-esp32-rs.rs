@@ -15,6 +15,25 @@ extern crate alloc;
 use esp_wifi::EspWifiController;
 use nixieclock_esp32_rs as lib;
 
+#[derive(Clone, Copy, Default)]
+struct VoltageCalc {
+    r1: f32,
+    r2: f32,
+}
+
+impl VoltageCalc {
+    pub const fn new((r1, r2): (f32, f32)) -> Self {
+        Self { r1, r2 }
+    }
+}
+
+impl lib::sensors::adc::VoltageCalculator<f32> for VoltageCalc {
+    fn to_voltage(&self, raw_value: u16) -> f32 {
+        // Assuming a 10-bit ADC with a reference voltage of 1.1V with a voltage divider
+        (raw_value as f32) * (0.8 / 4096.0) * ((self.r1 + self.r2) / self.r2)
+    }
+}
+
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
@@ -71,8 +90,21 @@ async fn main(spawner: Spawner) {
             Mutex::new(lib::sensors::mh_z19::MhZ19::new(uart2, 0x01))
         );
 
+        let am = {
+            use esp_hal::analog::adc::Attenuation;
+
+            let mut config = esp_hal::analog::adc::AdcConfig::default();
+            let sens_12v = config.enable_pin(peripherals.GPIO34, Attenuation::_0dB);
+            let sens_5v = config.enable_pin(peripherals.GPIO35, Attenuation::_0dB);
+            let sens_3v3 = config.enable_pin(peripherals.GPIO33, Attenuation::_0dB);
+
+            let adc = esp_hal::analog::adc::Adc::new(peripherals.ADC1, config);
+
+            lib::sensors::adc::AnalogMeasurments::new(adc, sens_12v, sens_5v, sens_3v3)
+        };
+
         let one_wire_pin = esp_hal::gpio::Flex::new(peripherals.GPIO4);
-        
+
         let (sda_pin, scl_pin) = (peripherals.GPIO21, peripherals.GPIO22);
         let i2c = esp_hal::i2c::master::I2c::new(
             peripherals.I2C0,
@@ -86,7 +118,7 @@ async fn main(spawner: Spawner) {
             Mutex::new(ds1307::Ds1307::new(i2c))
         );
 
-        spawner.must_spawn(sensor_reader(mhz19, clocks));
+        spawner.must_spawn(sensor_reader(mhz19, clocks, am));
         spawner.must_spawn(temperature_task(one_wire_pin));
     };
 }
@@ -101,8 +133,23 @@ async fn sensor_reader(
         embassy_sync::blocking_mutex::raw::NoopRawMutex,
         ds1307::Ds1307<esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>>,
     >,
+    mut am: nixieclock_esp32_rs::sensors::adc::AnalogMeasurments<
+        'static,
+        esp_hal::peripherals::ADC1,
+        esp_hal::gpio::GpioPin<34>,
+        esp_hal::gpio::GpioPin<35>,
+        esp_hal::gpio::GpioPin<33>,
+    >,
 ) {
+    const VOLTAGE_CONVERTORS: [VoltageCalc; 3] = [
+        VoltageCalc::new(lib::config::V12_DEVIDER),
+        VoltageCalc::new(lib::config::V5_DEVIDER),
+        VoltageCalc::new(lib::config::V3V3_DEVIDER),
+    ];
+
     loop {
+        let start = embassy_time::Instant::now();
+
         let result = {
             let mut mhz19_guard = mhz19.lock().await;
             mhz19_guard.read_gas_concentration_ppm().await
@@ -131,7 +178,20 @@ async fn sensor_reader(
             }
         }
 
-        embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+        {
+            match am.read(&VOLTAGE_CONVERTORS).await {
+                Ok(v) => {
+                    defmt::info!("Voltages: 12V: {}, 5V: {}, 3.3V: {}", v[0], v[1], v[2]);
+                }
+                Err(_) => {
+                    defmt::error!("Error reading voltages from ADC");
+                }
+            };
+        }
+
+        let elapsed = start.elapsed();
+
+        embassy_time::Timer::after(embassy_time::Duration::from_secs(1) - elapsed).await;
     }
 }
 
