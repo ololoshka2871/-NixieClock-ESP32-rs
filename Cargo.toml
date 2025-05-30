@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "1", default-features = false }
 nb = "1.1.0"
+num = { version = "0.4.3", default-features = false }
 embassy-net = { version = "0.6.0", features = [
   "dhcpv4",
   "medium-ethernet",
@@ -14,6 +15,7 @@ embassy-net = { version = "0.6.0", features = [
 ] }
 embedded-io = { version = "0.6.1", features = ["defmt-03"] }
 embedded-io-async = "0.6.1"
+embedded-hal = "1.0.0"
 esp-alloc = "0.7.0"
 esp-hal = { version = "1.0.0-beta.0", features = [
   "defmt",
@@ -58,7 +60,6 @@ picoserve = { version = "0.15.0", features = ["embassy"] }
 esp-hal-dhcp-server = "0.2.5"
 
 # hw
-#mh-z19c = { version = "0.3.0", default-features = false }
 mh-z19 = "0.3.3"
 onecable = "0.2.0"
 ds1307 = "0.6.0"

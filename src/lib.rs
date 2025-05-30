@@ -5,6 +5,7 @@ extern crate alloc;
 
 pub mod net;
 pub mod sensors;
+pub mod dynamic_indication;
 
 pub mod config;
 

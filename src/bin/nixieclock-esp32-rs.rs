@@ -3,10 +3,12 @@
 
 use core::cell::RefCell;
 
+use alloc::boxed::Box;
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use esp_hal::{
     clock::CpuClock,
+    gpio::{Level, Output},
     rng::Rng,
     timer::{timg::TimerGroup, PeriodicTimer},
     uart::Uart,
@@ -162,6 +164,10 @@ async fn main(spawner: Spawner) {
     };
 
     {
+        use lib::dynamic_indication::{
+            DIController, IC74141ParallelPolicy, OutputBus, ParallelOutputBus,
+        };
+
         let mut timer = PeriodicTimer::new(timg0.timer1);
         timer.set_interrupt_handler(esp_hal::interrupt::InterruptHandler::new(
             timer_isr,
@@ -173,6 +179,41 @@ async fn main(spawner: Spawner) {
                 lib::config::NIXIE_CLOCK_TIMER_PERIOD_US,
             ))
             .unwrap();
+
+        fn boxed_pin(
+            pin: impl esp_hal::peripheral::Peripheral<P = impl esp_hal::gpio::OutputPin> + 'static,
+        ) -> Box<dyn embedded_hal::digital::OutputPin<Error = core::convert::Infallible>> {
+            Box::new(Output::new(
+                pin,
+                Level::Low,
+                esp_hal::gpio::OutputConfig::default(),
+            ))
+        }
+
+        let data_bus: ParallelOutputBus<u8, _, 8> = ParallelOutputBus::new([
+            boxed_pin(peripherals.GPIO27),
+            boxed_pin(peripherals.GPIO26),
+            boxed_pin(peripherals.GPIO25),
+            boxed_pin(peripherals.GPIO33),
+            boxed_pin(peripherals.GPIO32),
+            boxed_pin(peripherals.GPIO12),
+            boxed_pin(peripherals.GPIO18),
+            boxed_pin(peripherals.GPIO19),
+        ]);
+
+        let selector = lib::dynamic_indication::OneOfSelector::new(ParallelOutputBus::new([
+            boxed_pin(peripherals.GPIO13),
+            boxed_pin(peripherals.GPIO12),
+            boxed_pin(peripherals.GPIO14),
+        ]));
+
+        let di_controller = DIController::new(
+            IC74141ParallelPolicy::new(data_bus, selector.bus().width()),
+            selector,
+            todo!(),
+            todo!(),
+        );
+
         unsafe {
             GLOBAL_CONTEXT = Some(CriticalSectionMutex::new(RefCell::new(GlobalContext::new(
                 timer,
