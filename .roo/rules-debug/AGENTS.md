@@ -1,17 +1,15 @@
 # Project Debug Rules (Non-Obvious Only)
 
 ## Hidden log locations not mentioned in docs
-- Webview dev tools accessed via Command Palette > "Developer: Open Webview Developer Tools" (not F12)
-- IPC messages fail silently if not wrapped in try/catch in packages/ipc/src/
-- Production builds require NODE_ENV=production or certain features break without error
-- Database migrations must run from packages/evals/ directory, not root
-- Extension logs only visible in "Extension Host" output channel, not Debug Console
+- Uses defmt for logging with DEFMT_LOG="info" environment variable
+- ESP32 logs accessible via serial monitor when flashing with espflash
 
 ## Non-standard debugging tools or flags
-- None specific to this project
+- Flash to device using: `cargo run` which uses espflash runner defined in .cargo/config.toml
 
 ## Gotchas that cause silent failures
-- None specific to this project
+- Hardware timer interrupt handler is defined externally at the bottom of main file
+- Memory allocation is limited; heap size is set to 72KB in main binary file
 
 ## Required environment variables for debugging
-- NODE_ENV=production for production builds
+- DEFMT_LOG="info" for proper logging output

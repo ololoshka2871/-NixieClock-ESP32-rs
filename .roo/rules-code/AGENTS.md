@@ -1,16 +1,16 @@
 # Project Coding Rules (Non-Obvious Only)
 
 ## Custom utilities that replace standard approaches
-- Always use safeWriteJson() from src/utils/ instead of JSON.stringify for file writes (prevents corruption)
-- API retry mechanism in src/api/providers/utils/ is mandatory (not optional as it appears)
-- Database queries MUST use the query builder in packages/evals/src/db/queries/ (raw SQL will fail)
-- Provider interface in packages/types/src/ has undocumented required methods
-- Test files must be in same directory as source for vitest to work (not in separate test folder)
+- mk_static! macro creates StaticCell instances for global data storage in embedded environment
+- Hardware-specific GPIO pin assignments are defined in src/bin/nixieclock-esp32-rs.rs for Nixie tube control
+- Voltage calculation uses specific resistor divider ratios defined in src/config.rs
 
 ## Non-standard patterns unique to this project
-- Hidden dependencies or coupling between components
-- Required import orders or naming conventions not enforced by linters
+- Uses `#![no_std]` and `#![no_main]` for bare-metal embedded development
+- Hardware timer interrupt handler is defined externally at the bottom of main file
+- Nixie clock timer operates at 100 microseconds period as defined in src/config.rs
 
 ## Gotchas that would cause errors if not followed
-- Ensure all dependencies are correctly specified in Cargo.toml.
-- Use safeWriteJson() for file writes to prevent corruption.
+- ESP32 requires specific rustflags and build-std settings in .cargo/config.toml
+- Memory allocation is limited; heap size is set to 72KB in main binary file
+- Hardware GPIO assignments must match physical connections described in README.md

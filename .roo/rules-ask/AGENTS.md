@@ -4,13 +4,13 @@
 - None specific to this project
 
 ## Counterintuitive code organization
-- "src/" contains VSCode extension code, not source for web apps (counterintuitive)
-- Provider examples in src/api/providers/ are the canonical reference (docs are outdated)
-- UI runs in VSCode webview with restrictions (no localStorage, limited APIs)
+- src/ contains ESP32 embedded Rust code, not typical application code
+- Sensors are managed in the `src/sensors/` directory with ADC and MH-Z19 CO2 sensor modules
+- Dynamic indication system in `src/dynamic_indication/` handles Nixie tube control
 
 ## Misleading folder names or structures
 - None specific to this project
 
 ## Important context not evident from file structure
-- Package.json scripts must be run from specific directories, not root
-- Locales in root are for extension, webview-ui/src/i18n for UI (two separate systems)
+- Uses `#![no_std]` and `#![no_main]` for bare-metal embedded development
+- HTML files stored in `src/net/html/` for embedded web interface
