@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NixieClock ESP32</title>
+<link rel="stylesheet" href="/style.css">
+</head><body>
+<h1>⚡ NixieClock ESP32</h1>
+
+<h2>Статус</h2><div class="card"><div class="kv">
+<b>uptime</b><span id="uptime">—</span>
+<b>firmware</b><span id="fw">—</span>
+<b>IP</b><span id="ip">—</span>
+<b>OTA-состояние</b><span id="ota_state">—</span>
+<b>лог-коллектор</b><span id="log_url" class="note">—</span>
+</div></div>
+
+<h2>Wi-Fi</h2><div class="card"><span class="note">выбор сети и пароль — в модуле M3 (NVS); сейчас точка доступа зашита в прошивку.</span></div>
+
+<h2>Время</h2><div class="card"><span class="note">DS1307 + NTP + часовой пояс — модуль M4.</span></div>
+
+<h2>Дисплей</h2><div class="card"><span class="note">яркость/режимы индикации — модуль M5.</span></div>
+
+<h2>Датчики</h2><div class="card"><span class="note">CO2 / температура / напряжения — модуль M6.</span></div>
+
+<h2>Обновление (OTA)</h2><div class="card">
+<input type="text" id="ota_url" value="http://192.168.0.28:8000/app_ota.bin">
+<div class="row"><button id="ota_btn">Обновить с URL</button><button class="sec" id="revert_btn">Откатить образ</button></div>
+<div id="ota_msg" class="note"></div>
+</div>
+
+<h2>Логи устройства</h2><div class="card"><pre id="logs">(нажмите «Загрузить»)</pre>
+<div class="row"><button class="sec" id="log_btn">Загрузить</button></div></div>
+
+<script src="/app.js"></script>
+</body></html>

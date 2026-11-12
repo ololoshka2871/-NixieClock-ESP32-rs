@@ -130,7 +130,13 @@ async fn handle<'a>(
 
     match path {
         "/" => {
-            respond_html(socket, clock_core::page::PAGE_HTML).await;
+            respond_gz(socket, "text/html; charset=utf-8", clock_core::page::PAGE_GZ).await;
+        }
+        "/style.css" => {
+            respond_gz(socket, "text/css; charset=utf-8", clock_core::page::CSS_GZ).await;
+        }
+        "/app.js" => {
+            respond_gz(socket, "application/javascript; charset=utf-8", clock_core::page::JS_GZ).await;
         }
         "/api/status" => {
             body.clear();
@@ -245,15 +251,16 @@ fn current_ota_state_str() -> heapless::String<32> {
     s
 }
 
-async fn respond_html<'a>(socket: &mut TcpSocket<'a>, html: &str) {
+async fn respond_gz<'a>(socket: &mut TcpSocket<'a>, content_type: &str, gz: &[u8]) {
     let mut headers: String<256> = String::new();
     let _ = write!(
         headers,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-        html.len()
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        content_type,
+        gz.len()
     );
     write_all(socket, headers.as_bytes()).await;
-    write_all(socket, html.as_bytes()).await;
+    write_all(socket, gz).await;
 }
 
 fn status_body(body: &mut String<4096>) {

@@ -1,7 +1,14 @@
 [package]
 name = "clock-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Чистая бизнес-логика приложения: без esp/embassy, тестируется на хосте"
 
 [dependencies]
+
+[build-dependencies]
+flate2 = "1.1"
+
+[dev-dependencies]
+flate2 = "1.1"
+
