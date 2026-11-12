@@ -1,10 +1,11 @@
 [package]
 name = "clock-core"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Чистая бизнес-логика приложения: без esp/embassy, тестируется на хосте"
 
 [dependencies]
+heapless = "0.9.3"
 
 [build-dependencies]
 flate2 = "1.1"

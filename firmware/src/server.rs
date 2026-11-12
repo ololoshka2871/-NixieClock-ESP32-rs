@@ -12,7 +12,7 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 use heapless::String;
 
 use crate::{
-    BOOT_CONFIRMED, LOG_URL, OTA_BUSY, OTA_LOCK, OTA_REQ, OtaPublisher, OtaRequest,
+    BOOT_CONFIRMED, LOG_URL, OTA_BUSY, OTA_REQ, OtaPublisher, OtaRequest,
     PENDING_BOOT, ROLLBACK_LATCHED, logger,
 };
 use esp_hal::system::software_reset;
@@ -118,8 +118,8 @@ async fn handle<'a>(
         return;
     };
 
-    if method != "GET" {
-        respond(socket, "400 Bad Request", "text/plain", "only GET is supported\n").await;
+    if method != "GET" && method != "POST" {
+        respond(socket, "400 Bad Request", "text/plain", "only GET/POST are supported\n").await;
         return;
     }
 
@@ -127,6 +127,24 @@ async fn handle<'a>(
         Some((p, q)) => (p, q),
         None => (path, ""),
     };
+
+    // POST принят ровно на один маршрут — сохранение Wi-Fi настроек.
+    if method == "POST" {
+        if path != "/api/wifi/connect" {
+            respond(
+                socket,
+                "405 Method Not Allowed",
+                "text/plain",
+                "POST is only accepted on /api/wifi/connect\n",
+            )
+            .await;
+            return;
+        }
+        let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+        read_post_body(socket, reqbuf, &mut raw, len).await;
+        handle_wifi_connect(socket, raw.as_slice()).await;
+        return;
+    }
 
     match path {
         "/" => {
@@ -148,6 +166,7 @@ async fn handle<'a>(
                     ipbuf.truncate(ip.len());
                 }
             }
+            let aw = crate::settings::active_wifi();
             let snap = clock_core::StatusSnapshot {
                 uptime_secs: Instant::now().as_secs(),
                 fw: env!("CARGO_PKG_NAME"),
@@ -158,6 +177,8 @@ async fn handle<'a>(
                 confirmed: BOOT_CONFIRMED.load(Ordering::SeqCst),
                 latched: ROLLBACK_LATCHED.load(Ordering::SeqCst),
                 busy: OTA_BUSY.load(Ordering::SeqCst),
+                wifi_ssid: if aw.ssid.is_empty() { None } else { Some(aw.ssid.as_str()) },
+                wifi_saved: aw.from_nvs,
             };
             let _ = write!(body, "{}", snap);
             respond(socket, "200 OK", "application/json", body.as_str()).await;
@@ -178,12 +199,8 @@ async fn handle<'a>(
             respond(socket, "200 OK", "text/plain", "marking current image INVALID, resetting\n").await;
             log::warn!("/revert: marking the current image invalid");
             ROLLBACK_LATCHED.store(true, Ordering::SeqCst);
-            OTA_LOCK.lock(|cell| {
-                if let Some(u) = cell.borrow_mut().as_mut() {
-                    use esp_bootloader_esp_idf::ota::OtaImageState;
-                    let _ = u.set_current_ota_state(OtaImageState::Invalid);
-                }
-            });
+            use esp_bootloader_esp_idf::ota::OtaImageState;
+            let _ = crate::updater::with_updater(|u| u.set_current_ota_state(OtaImageState::Invalid));
             Timer::after_millis(500).await;
             software_reset();
         }
@@ -233,22 +250,87 @@ async fn handle<'a>(
 /// Состояние OTA-слота одной строкой для JSON (ище строки короче 32 символов).
 fn current_ota_state_str() -> heapless::String<32> {
     let mut s: heapless::String<32> = String::new();
-    match OTA_LOCK.lock(|cell| {
-        cell.borrow_mut()
-            .as_mut()
-            .map(|u| u.current_ota_state())
-    }) {
-        Some(Ok(st)) => {
+    match crate::updater::with_updater(|u| u.current_ota_state()) {
+        Ok(st) => {
             let _ = write!(s, "{:?}", st);
         }
-        Some(Err(_)) => {
+        Err(_) => {
             s.push_str("Error").ok();
-        }
-        None => {
-            s.push_str("no_updater").ok();
         }
     }
     s
+}
+
+/// Прочитать POST-тело (Content-Length, потолок 512 Б) в `body`: сначала
+/// используем байты, уже приехавшие в буфер вместе с заголовками, потом
+/// дочитываем с сокета. Невалидный UTF-8 молча отбрасывается — парсер
+/// core сообщит ошибку разбора.
+async fn read_post_body<'a>(
+    socket: &mut TcpSocket<'a>,
+    reqbuf: &mut [u8],
+    out: &mut heapless::Vec<u8, 512>,
+    head_len: usize,
+) {
+    out.clear();
+    let Ok(text) = core::str::from_utf8(&reqbuf[..head_len]) else {
+        return;
+    };
+    let head_end = match text.find("\r\n\r\n") {
+        Some(i) => i + 4,
+        None => head_len,
+    };
+    let mut cl: usize = 0;
+    for line in text[..head_end].lines() {
+        if line.get(..15).is_some_and(|p| p.eq_ignore_ascii_case("content-length:")) {
+            cl = line[15..].trim().parse().unwrap_or(0);
+        }
+    }
+    let need = cl.min(512);
+    let have = (head_len - head_end).min(need);
+    let _ = out.extend_from_slice(&reqbuf[head_end..head_end + have]);
+    let mut got = have;
+    while got < need {
+        match socket.read(reqbuf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let take = n.min(need - got);
+                let _ = out.extend_from_slice(&reqbuf[..take]);
+                got += take;
+            }
+        }
+    }
+}
+
+/// POST /api/wifi/connect: валидация (core::settings) -> запись в NVS ->
+/// ответ -> мягкий reboot, чтобы креды реально применялись новым Wi-Fi стеком.
+async fn handle_wifi_connect<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
+    let text = core::str::from_utf8(raw).unwrap_or("");
+    match clock_core::settings::parse_wifi_json(text) {
+        Err(e) => {
+            log::warn!("wifi/connect: rejected: {}", e);
+            let mut resp: String<256> = String::new();
+            let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+            respond(socket, "400 Bad Request", "application/json", resp.as_str()).await;
+        }
+        Ok(creds) => match crate::settings::save_wifi(&creds) {
+            Err(e) => {
+                log::error!("wifi/connect: NVS save failed: {}", e);
+                let mut resp: String<256> = String::new();
+                let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+                respond(socket, "500 Internal Server Error", "application/json", resp.as_str()).await;
+            }
+            Ok(()) => {
+                crate::settings::set_active(&creds, true);
+                log::info!(
+                    "wifi/connect: creds saved to NVS (ssid={}), rebooting in 2s",
+                    creds.ssid
+                );
+                respond(socket, "200 OK", "application/json", "{\"status\":\"saved\",\"reboot_in_ms\":2000}").await;
+                Timer::after_millis(2000).await;
+                software_reset();
+            }
+        },
+    }
 }
 
 async fn respond_gz<'a>(socket: &mut TcpSocket<'a>, content_type: &str, gz: &[u8]) {
@@ -266,19 +348,12 @@ async fn respond_gz<'a>(socket: &mut TcpSocket<'a>, content_type: &str, gz: &[u8
 fn status_body(body: &mut String<4096>) {
     body.clear();
     let _ = write!(body, "uptime_secs={}\n", Instant::now().as_secs());
-    match OTA_LOCK.lock(|cell| {
-        cell.borrow_mut()
-            .as_mut()
-            .map(|u| u.current_ota_state())
-    }) {
-        Some(Ok(st)) => {
+    match crate::updater::with_updater(|u| u.current_ota_state()) {
+        Ok(st) => {
             let _ = write!(body, "ota_state={:?}\n", st);
         }
-        Some(Err(e)) => {
-            let _ = write!(body, "ota_state_error={:?}\n", e);
-        }
-        None => {
-            let _ = body.push_str("ota_state=no_updater\n");
+        Err(e) => {
+            let _ = write!(body, "ota_state_error={}\n", e);
         }
     }
     let _ = write!(

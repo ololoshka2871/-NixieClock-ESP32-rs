@@ -18,9 +18,13 @@ use heapless::String;
 use reqwless::client::HttpClient;
 use reqwless::request::{Method, RequestBuilder};
 
-use crate::{OTA_BUSY, OTA_LOCK, OTA_REQ, OtaRequest};
+use crate::{OTA_BUSY, OTA_REQ, OtaRequest};
 
-use esp_bootloader_esp_idf::ota::OtaImageState;
+use esp_bootloader_esp_idf::{
+    ota::OtaImageState,
+    ota_updater::OtaUpdater,
+    partitions::PARTITION_TABLE_MAX_LEN,
+};
 use esp_hal::system::software_reset;
 
 const CHUNK: usize = 4096;
@@ -85,14 +89,30 @@ fn crc32(crc: u32, bytes: &[u8]) -> u32 {
     c
 }
 
-fn next_slot_capacity() -> Result<usize, OtaErr> {
-    OTA_LOCK.lock(|cell| match cell.borrow_mut().as_mut() {
-        Some(u) => match u.next_partition() {
-            Ok((region, _ty)) => Ok(region.capacity()),
-            Err(e) => Err(errf(format_args!("no target slot: {:?}", e))),
-        },
-        None => Err(errf(format_args!("no OTA updater"))),
+/// Кратковременный доступ к OTA-апдейтеру: поверх общей flash-ручки (flashcell)
+/// создаётся ВРЕМЕННЫЙ OtaUpdater и тут же destroy; он никогда не держит
+/// &mut FlashStorage вне короткого окна мьютекса. Благодаря этого NVS (settings)
+/// и OTA сериализованы на одном мьютексе без алиасинга владения единственным
+/// экземпляром FlashStorage (esp-storage -- синглтон чипа).
+pub fn with_updater<R>(
+    f: impl FnOnce(
+        &mut OtaUpdater<'_, '_>,
+    ) -> core::result::Result<R, esp_bootloader_esp_idf::partitions::Error>,
+) -> Result<R, OtaErr> {
+    crate::flashcell::with_flash(|flash| {
+        let ptbuf = &mut *mkstatic!(
+            [u8; PARTITION_TABLE_MAX_LEN],
+            [0u8; PARTITION_TABLE_MAX_LEN]
+        );
+        match OtaUpdater::new(flash, ptbuf) {
+            Ok(mut u) => f(&mut u).map_err(|e| errf(format_args!("updater: {:?}", e))),
+            Err(e) => Err(errf(format_args!("updater init: {:?}", e))),
+        }
     })
+}
+
+fn next_slot_capacity() -> Result<usize, OtaErr> {
+    with_updater(|u| u.next_partition().map(|(region, _ty)| region.capacity()))
 }
 
 async fn do_ota(
@@ -165,16 +185,9 @@ async fn do_ota(
         while total + CHUNK > erased_to {
             let from = erased_to as u32;
             let to = (erased_to + ERASE_BLOCK).min(cap) as u32;
-            let res = OTA_LOCK.lock(|cell| {
-                cell.borrow_mut().as_mut().map(|u| {
-                    u.next_partition().map(|(mut r, _)| r.erase(from, to))
-                })
-            });
-            match res {
-                Some(Ok(Ok(()))) => {}
-                Some(Ok(Err(e))) => return Err(errf(format_args!("erase: {:?}", e))),
-                Some(Err(e)) => return Err(errf(format_args!("slot: {:?}", e))),
-                None => return Err(errf(format_args!("no OTA updater"))),
+            if let Err(e) = with_updater(|u| u.next_partition().map(|(mut r, _)| r.erase(from, to)))
+            {
+                return Err(errf(format_args!("erase: {}", e)));
             }
             erased_to = (erased_to + ERASE_BLOCK).min(cap);
             Timer::after_millis(1).await;
@@ -199,17 +212,10 @@ async fn do_ota(
         crc = crc32(crc, &chunk[..n]);
 
         let off = total as u32;
-        let res = OTA_LOCK.lock(|cell| {
-            cell.borrow_mut().as_mut().map(|u| {
-                u.next_partition()
-                    .map(|(mut r, _)| r.write(off, &chunk[..n]))
-            })
-        });
-        match res {
-            Some(Ok(Ok(()))) => {}
-            Some(Ok(Err(e))) => return Err(errf(format_args!("flash write: {:?}", e))),
-            Some(Err(e)) => return Err(errf(format_args!("slot: {:?}", e))),
-            None => return Err(errf(format_args!("no OTA updater"))),
+        if let Err(e) =
+            with_updater(|u| u.next_partition().map(|(mut r, _)| r.write(off, &chunk[..n])))
+        {
+            return Err(errf(format_args!("flash write: {}", e)));
         }
         total += n;
 
@@ -241,15 +247,11 @@ async fn do_ota(
     // Активация: otadata выбирает следующий слот; состояние New означает, что
     // загрузчик (с rollback) переведёт его в PendingVerify и не подтверждённый
     // образ будет откачен.
-    let res = OTA_LOCK.lock(|cell| {
-        cell.borrow_mut().as_mut().map(|u| {
-            u.activate_next_partition()
-                .and_then(|_| u.set_current_ota_state(OtaImageState::New))
-        })
-    });
-    match res {
-        Some(Ok(())) => Ok(total),
-        Some(Err(e)) => Err(errf(format_args!("activate failed: {:?}", e))),
-        None => Err(errf(format_args!("no OTA updater"))),
+    match with_updater(|u| {
+        u.activate_next_partition()
+            .and_then(|_| u.set_current_ota_state(OtaImageState::New))
+    }) {
+        Ok(()) => Ok(total),
+        Err(e) => Err(errf(format_args!("activate failed: {}", e))),
     }
 }

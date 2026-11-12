@@ -52,6 +52,7 @@ impl Watchdog {
 }
 
 pub mod page;
+pub mod settings;
 
 /// Снимок состояния для JSON `/api/status` (SPA-подложка). Формируется в
 /// firmware, сериализуется здесь — формат тестируется на хосте.
@@ -65,6 +66,8 @@ pub struct StatusSnapshot<'a> {
     pub confirmed: bool,
     pub latched: bool,
     pub busy: bool,
+    pub wifi_ssid: Option<&'a str>,
+    pub wifi_saved: bool,
 }
 
 impl StatusSnapshot<'_> {
@@ -78,9 +81,14 @@ impl StatusSnapshot<'_> {
             Some(ip) => write!(out, "\"{}\"", ip)?,
             None => out.write_str("null")?,
         }
+        match self.wifi_ssid {
+            Some(ssid) => write!(out, ",\"wifi_ssid\":\"{}\"", ssid)?,
+            None => out.write_str(",\"wifi_ssid\":null")?,
+        }
         write!(
             out,
-            ",\"ota_state\":\"{}\",\"pending\":{},\"confirmed\":{},\"latched\":{},\"busy\":{}}}",
+            ",\"wifi_saved\":{},\"ota_state\":\"{}\",\"pending\":{},\"confirmed\":{},\"latched\":{},\"busy\":{}}}",
+            self.wifi_saved,
             self.ota_state,
             self.pending,
             self.confirmed,
@@ -164,11 +172,13 @@ mod tests {
             confirmed: true,
             latched: false,
             busy: false,
+            wifi_ssid: Some("Mokrot-5G"),
+            wifi_saved: true,
         };
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false}"
         );
         let s2 = StatusSnapshot { ip: None, ota_state: "New", pending: true, ..s };
         let json2 = alloc::format!("{}", s2);

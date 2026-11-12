@@ -23,8 +23,16 @@
     </div>
 
     <h2>Wi-Fi</h2>
-    <div class="card"><span class="note">выбор сети и пароль — в модуле M3 (NVS); сейчас точка доступа зашита в
-            прошивку.</span></div>
+    <div class="card">
+        <div class="kv">
+            <b>подключен к</b><span id="wifi_cur">—</span>
+            <b>креды</b><span id="wifi_src">—</span>
+        </div>
+        <div class="row"><input type="text" id="wifi_ssid_in" placeholder="SSID" maxlength="31"><input
+                type="password" id="wifi_pass_in" placeholder="пароль (8–63)" maxlength="63"></div>
+        <div class="row"><button id="wifi_btn">Сохранить и перезагрузить</button></div>
+        <div id="wifi_msg" class="note"></div>
+    </div>
 
     <h2>Время</h2>
     <div class="card"><span class="note">DS1307 + NTP + часовой пояс — модуль M4.</span></div>

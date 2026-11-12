@@ -8,6 +8,8 @@ async function poll() {
         $("uptime").textContent = fmtU(s.uptime);
         $("fw").textContent = s.fw + " v" + s.version;
         $("ip").textContent = s.ip || "нет IP (wifi не подключён)";
+        $("wifi_cur").textContent = s.wifi_ssid || "—";
+        $("wifi_src").textContent = s.wifi_saved ? "из NVS (сохранены)" : "из прошивки (env)";
         const el = $("ota_state"); el.textContent = s.ota_state + (s.pending ? " (ждет подтверждения)" : "");
         el.className = s.ota_state === "Valid" ? "ok" : (s.pending || s.ota_state === "New" ? "warn" : "err");
     } catch (e) { $("uptime").textContent = "сервер недоступен" }
@@ -24,4 +26,13 @@ $("revert_btn").onclick = async () => {
 };
 $("log_btn").onclick = async () => {
     try { const r = await fetch("/logs", { cache: "no-store" }); $("logs").textContent = await r.text() } catch (e) { $("logs").textContent = "ошибка: " + e }
+};
+$("wifi_btn").onclick = async () => {
+    const ssid = $("wifi_ssid_in").value.trim(), pass = $("wifi_pass_in").value;
+    $("wifi_msg").textContent = "сохраняю…";
+    try {
+        const r = await fetch("/api/wifi/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ssid, password: pass }) });
+        const j = await r.json();
+        $("wifi_msg").textContent = j.status === "saved" ? "сохранено в NVS, перезагрузка…" : "ошибка: " + (j.error || r.status);
+    } catch (e) { $("wifi_msg").textContent = "ошибка: " + e }
 };

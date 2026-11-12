@@ -70,7 +70,8 @@ button.sec {
     color: var(--fg)
 }
 
-input[type=text] {
+input[type=text],
+input[type=password] {
     width: 100%;
     background: #0d0b08;
     color: var(--fg);

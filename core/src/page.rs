@@ -37,7 +37,7 @@ mod tests {
         let page = gunzip(PAGE_GZ);
         assert!(page.starts_with("<!DOCTYPE html>"));
         assert!(page.trim_end().ends_with("</html>"));
-        for id in ["uptime", "fw", "ip", "ota_state", "ota_url", "ota_btn", "revert_btn", "logs"] {
+        for id in ["uptime", "fw", "ip", "ota_state", "ota_url", "ota_btn", "revert_btn", "logs", "wifi_cur", "wifi_src", "wifi_ssid_in", "wifi_pass_in", "wifi_btn", "wifi_msg"] {
             assert!(page.contains(&format!("id=\"{id}\"")), "missing #{id}");
         }
         // стили и скрипты — отдельными файлами, ничего инлайн
@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn app_js_uses_our_endpoints() {
         let js = gunzip(JS_GZ);
-        for ep in ["/api/status", "/ota?url=", "/revert", "/logs"] {
+        for ep in ["/api/status", "/ota?url=", "/revert", "/logs", "/api/wifi/connect"] {
             assert!(js.contains(ep), "missing endpoint {ep}");
         }
         // относительные fetch -> страница работает с любого адреса платы

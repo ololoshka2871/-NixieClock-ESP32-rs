@@ -10,13 +10,14 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
+extern crate alloc;
+
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Spawner;
 use embassy_net::{Runner, Stack, StackResources};
 use embassy_sync::{
-    blocking_mutex::{raw::CriticalSectionRawMutex, Mutex},
+    blocking_mutex::raw::CriticalSectionRawMutex,
     pubsub::{PubSubChannel, Publisher},
 };
 use embassy_time::Timer;
@@ -24,7 +25,6 @@ use esp_alloc as _;
 use esp_backtrace as _;
 use esp_bootloader_esp_idf::{
     ota::OtaImageState,
-    ota_updater::OtaUpdater,
     partitions::{
         AppPartitionSubType, PartitionType, PARTITION_TABLE_MAX_LEN, read_partition_table,
     },
@@ -56,8 +56,10 @@ macro_rules! mkstatic {
 }
 
 mod app;
+mod flashcell;
 mod logger;
 mod server;
+mod settings;
 mod updater;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -78,10 +80,6 @@ pub static PENDING_BOOT: AtomicBool = AtomicBool::new(false);
 pub static BOOT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 pub static ROLLBACK_LATCHED: AtomicBool = AtomicBool::new(false);
 pub static OTA_BUSY: AtomicBool = AtomicBool::new(false);
-
-pub type Updater = OtaUpdater<'static, 'static>;
-pub static OTA_LOCK: Mutex<CriticalSectionRawMutex, RefCell<Option<Updater>>> =
-    Mutex::new(RefCell::new(None));
 
 #[derive(Clone)]
 pub struct OtaRequest {
@@ -127,122 +125,125 @@ async fn main(spawner: Spawner) -> ! {
 
     // Читаем состояние OTA: если загрузчик запустил новый (неподтверждённый) образ,
     // включаем guard подтверждения.
-    let flash = mkstatic!(FlashStorage<'static>, FlashStorage::new(peripherals.FLASH));
-    let ptbuf = mkstatic!([u8; PARTITION_TABLE_MAX_LEN], [0u8; PARTITION_TABLE_MAX_LEN]);
+    // Единая flash-ячейка: NVS и OTA-апдейтер получают свои zero-sized ручки,
+    // доступ к FlashStorage сериализуется мьютексом (см. flashcell.rs).
+    flashcell::init(FlashStorage::new(peripherals.FLASH));
 
     // После UART-прошивки otadata стёрта: crate считает «текущий» слот Factory,
     // и первый OTA может перетереть уже загруженный слот. Запоминаем
     // реально загруженный слот (по MMU entry 0) — ниже инициализируем otadata им.
-    let booted_app = match read_partition_table(flash, &mut ptbuf[..]) {
-        Ok(pt) => match pt.booted_partition() {
-            Ok(Some(p)) => match p.partition_type() {
-                PartitionType::App(sub) => Some(sub),
+    let booted_app = flashcell::with_flash(|flash| {
+        let ptbuf = &mut *mkstatic!(
+            [u8; PARTITION_TABLE_MAX_LEN],
+            [0u8; PARTITION_TABLE_MAX_LEN]
+        );
+        match read_partition_table(flash, ptbuf) {
+            Ok(pt) => match pt.booted_partition() {
+                Ok(Some(p)) => match p.partition_type() {
+                    PartitionType::App(sub) => Some(sub),
+                    _ => None,
+                },
                 _ => None,
             },
-            _ => None,
-        },
-        Err(e) => {
-            log::warn!("cannot read partition table for booted slot: {:?}", e);
-            None
-        }
-    };
-
-    match OtaUpdater::new(flash, ptbuf) {
-        Ok(updater) => {
-            OTA_LOCK.lock(|cell| *cell.borrow_mut() = Some(updater));
-
-            // otadata стёрта (selected == Factory) -> фиксируем выбор на
-            // реально загруженном слоте, иначе первый OTA пойдёт в него же.
-            let otadata_fix = OTA_LOCK.lock(|cell| {
-                cell.borrow_mut().as_mut().map(|u| match u.selected_partition() {
-                    Ok(AppPartitionSubType::Factory) => {
-                        let target = booted_app.unwrap_or(AppPartitionSubType::Ota0);
-                        let name = match target {
-                            AppPartitionSubType::Ota0 => "ota_0",
-                            AppPartitionSubType::Ota1 => "ota_1",
-                            _ => "slot?",
-                        };
-                        log::warn!("otadata erased: initialising selection to {}", name);
-                        u.ota_data()
-                            .and_then(|mut o| o.set_current_app_partition(target))
-                    }
-                    Ok(_) => Ok(()),
-                    Err(e) => Err(e),
-                })
-            });
-            if let Some(Err(e)) = otadata_fix {
-                log::warn!("cannot initialise otadata: {:?}", e);
+            Err(e) => {
+                log::warn!("cannot read partition table for booted slot: {:?}", e);
+                None
             }
+        }
+    });
+
+    // otadata стёрта (selected == Factory) -> фиксируем выбор на
+    // реально загруженном слоте, иначе первый OTA пойдёт в него же.
+    let otadata_fix = updater::with_updater(|u| match u.selected_partition() {
+        Ok(AppPartitionSubType::Factory) => {
+            let target = booted_app.unwrap_or(AppPartitionSubType::Ota0);
+            let name = match target {
+                AppPartitionSubType::Ota0 => "ota_0",
+                AppPartitionSubType::Ota1 => "ota_1",
+                _ => "slot?",
+            };
+            log::warn!("otadata erased: initialising selection to {}", name);
+            u.ota_data()
+                .and_then(|mut o| o.set_current_app_partition(target))
+        }
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
+    });
+    match otadata_fix {
+        Ok(()) => {}
+        Err(e) => log::error!("no OTA partitions / otadata init failed: {}", e),
+    }
 
             // Если otadata选的 слот != реально загруженный — загрузчик пытался
             // поднять новый слот, НЕ смог его загрузить (битый образ) и откатился.
             // Подтверждать/гардить можно только свой (загруженный) слот: иначе
             // хороший образ пометит VALID мусорный слот, в котором загрузчик
             // уже был.
-            let selected = OTA_LOCK.lock(|cell| {
-                cell.borrow_mut().as_mut().map(|u| u.selected_partition())
-            });
-            let fell_back = match (booted_app, selected) {
-                (Some(bapp), Some(Ok(sapp)))
-                    if sapp != AppPartitionSubType::Factory && sapp != bapp =>
-                {
+    let selected = updater::with_updater(|u| u.selected_partition());
+    let fell_back = match (booted_app, selected) {
+        (Some(bapp), Ok(sapp)) if sapp != AppPartitionSubType::Factory && sapp != bapp => {
+            log::warn!(
+                "otadata selects {:?} but this app boots from {:?}: bootloader rolled back",
+                sapp,
+                bapp
+            );
+            true
+        }
+        _ => false,
+    };
+    if fell_back {
+        let r = updater::with_updater(
+            |u| -> core::result::Result<(), esp_bootloader_esp_idf::partitions::Error> {
+                let st = u.current_ota_state()?;
+                if st == OtaImageState::New || st == OtaImageState::PendingVerify {
                     log::warn!(
-                        "otadata selects {:?} but this app boots from {:?}: bootloader rolled back",
-                        sapp,
-                        bapp
+                        "selected slot state {:?} -> marking INVALID (its image failed to load)",
+                        st
                     );
-                    true
+                    u.set_current_ota_state(OtaImageState::Invalid)?;
                 }
-                _ => false,
-            };
-            if fell_back {
-                let r = OTA_LOCK.lock(|cell| {
-                    cell.borrow_mut().as_mut().map(
-                        |u| -> core::result::Result<(), esp_bootloader_esp_idf::partitions::Error> {
-                            let st = u.current_ota_state()?;
-                            if st == OtaImageState::New || st == OtaImageState::PendingVerify {
-                                log::warn!(
-                                    "selected slot state {:?} -> marking INVALID (its image failed to load)",
-                                    st
-                                );
-                                u.set_current_ota_state(OtaImageState::Invalid)?;
-                            }
-                            Ok(())
-                        },
-                    )
-                });
-                if let Some(Err(e)) = r {
-                    log::warn!("fallback state fix failed: {:?}", e);
-                }
-            } else {
-                let state = OTA_LOCK.lock(|cell| {
-                    cell.borrow_mut().as_mut().map(|u| u.current_ota_state())
-                });
-                match state {
-                    Some(Ok(st)) => {
-                        log::info!("OTA state of the booted image: {:?}", st);
-                        if st == OtaImageState::New || st == OtaImageState::PendingVerify {
-                            PENDING_BOOT.store(true, Ordering::SeqCst);
-                            log::warn!(
-                                "image is not confirmed yet: {}s to bring WiFi up, otherwise rollback",
-                                PENDING_TIMEOUT_SECS
-                            );
-                        }
-                    }
-                    Some(Err(e)) => log::warn!("cannot read OTA state: {:?}", e),
-                    None => log::warn!("no OTA updater"),
+                Ok(())
+            },
+        );
+        if let Err(e) = r {
+            log::warn!("fallback state fix failed: {}", e);
+        }
+    } else {
+        let state = updater::with_updater(|u| u.current_ota_state());
+        match state {
+            Ok(st) => {
+                log::info!("OTA state of the booted image: {:?}", st);
+                if st == OtaImageState::New || st == OtaImageState::PendingVerify {
+                    PENDING_BOOT.store(true, Ordering::SeqCst);
+                    log::warn!(
+                        "image is not confirmed yet: {}s to bring WiFi up, otherwise rollback",
+                        PENDING_TIMEOUT_SECS
+                    );
                 }
             }
+            Err(e) => log::warn!("cannot read OTA state: {}", e),
         }
-        Err(e) => log::error!("no OTA partitions found: {:?}", e),
     }
 
-    // WiFi
+    // WiFi: сохранённые в NVS креды; если их нет — креды из времени сборки (env).
+    let saved = settings::load_wifi();
+    let creds = match &saved {
+        Some(c) => {
+            log::info!("wifi creds loaded from NVS (ssid={})", c.ssid);
+            c.clone()
+        }
+        None => {
+            log::info!("no creds in NVS: using build-time SSID={}", SSID);
+            clock_core::settings::WifiCredentials::new(SSID, PASSWORD)
+                .expect("build-time SSID/PASSWORD must be valid")
+        }
+    };
+    settings::set_active(&creds, saved.is_some());
     let station_config = WifiConfig::Station(
         StationConfig::default()
-            .with_ssid(SSID.try_into().unwrap())
+            .with_ssid(creds.ssid.as_str().try_into().unwrap())
             .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
-                PASSWORD.try_into().unwrap(),
+                creds.password.as_str().try_into().unwrap(),
             )),
     );
     let wifi_interface = Interface::station();
@@ -285,18 +286,12 @@ async fn main(spawner: Spawner) -> ! {
         log::info!("got IP {}", cfg.address);
     }
     if PENDING_BOOT.load(Ordering::SeqCst) && !ROLLBACK_LATCHED.load(Ordering::SeqCst) {
-        let res = OTA_LOCK.lock(|cell| {
-            cell.borrow_mut()
-                .as_mut()
-                .map(|u| u.set_current_ota_state(OtaImageState::Valid))
-        });
-        match res {
-            Some(Ok(())) => {
+        match updater::with_updater(|u| u.set_current_ota_state(OtaImageState::Valid)) {
+            Ok(()) => {
                 BOOT_CONFIRMED.store(true, Ordering::SeqCst);
                 log::info!("OTA image confirmed VALID");
             }
-            Some(Err(e)) => log::warn!("confirm failed: {:?}", e),
-            None => log::warn!("no OTA updater to confirm image"),
+            Err(e) => log::warn!("confirm failed: {}", e),
         }
     }
 
@@ -361,11 +356,7 @@ async fn pending_guard() {
         "image did not confirm in {}s: marking INVALID, resetting (bootloader rolls back)",
         PENDING_TIMEOUT_SECS
     );
-    OTA_LOCK.lock(|cell| {
-        if let Some(u) = cell.borrow_mut().as_mut() {
-            let _ = u.set_current_ota_state(OtaImageState::Invalid);
-        }
-    });
+    let _ = updater::with_updater(|u| u.set_current_ota_state(OtaImageState::Invalid));
     Timer::after_millis(1000).await;
     software_reset();
 }
