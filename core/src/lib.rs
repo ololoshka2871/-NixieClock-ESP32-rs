@@ -49,6 +49,51 @@ impl Watchdog {
     }
 }
 
+pub mod page;
+
+/// Снимок состояния для JSON `/api/status` (SPA-подложка). Формируется в
+/// firmware, сериализуется здесь — формат тестируется на хосте.
+pub struct StatusSnapshot<'a> {
+    pub uptime_secs: u64,
+    pub fw: &'a str,
+    pub version: &'a str,
+    pub ip: Option<&'a str>,
+    pub ota_state: &'a str,
+    pub pending: bool,
+    pub confirmed: bool,
+    pub latched: bool,
+    pub busy: bool,
+}
+
+impl StatusSnapshot<'_> {
+    fn write_json(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            out,
+            "{{\"uptime\":{},\"fw\":\"{}\",\"version\":\"{}\",\"ip\":",
+            self.uptime_secs, self.fw, self.version
+        )?;
+        match self.ip {
+            Some(ip) => write!(out, "\"{}\"", ip)?,
+            None => out.write_str("null")?,
+        }
+        write!(
+            out,
+            ",\"ota_state\":\"{}\",\"pending\":{},\"confirmed\":{},\"latched\":{},\"busy\":{}}}",
+            self.ota_state,
+            self.pending,
+            self.confirmed,
+            self.latched,
+            self.busy
+        )
+    }
+}
+
+impl core::fmt::Display for StatusSnapshot<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.write_json(f)
+    }
+}
+
 /// Пример «чистой» выходной логики: циклический бит из маски моргания.
 pub fn blink_pattern(step: u64, pattern: &[bool]) -> bool {
     if pattern.is_empty() {
@@ -102,5 +147,30 @@ mod tests {
         let wd = Watchdog::new(1_000, u64::MAX - 10);
         assert!(!wd.expired(u64::MAX - 5));
         assert!(wd.expired(u64::MAX));
+    }
+
+    #[test]
+    fn status_json_shape() {
+        use super::StatusSnapshot;
+        let s = StatusSnapshot {
+            uptime_secs: 123,
+            fw: "nixieclock-firmware",
+            version: "0.1.0",
+            ip: Some("192.168.0.123"),
+            ota_state: "Valid",
+            pending: false,
+            confirmed: true,
+            latched: false,
+            busy: false,
+        };
+        let json = alloc::format!("{}", s);
+        assert_eq!(
+            json,
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false}"
+        );
+        let s2 = StatusSnapshot { ip: None, ota_state: "New", pending: true, ..s };
+        let json2 = alloc::format!("{}", s2);
+        assert!(json2.contains("\"ip\":null"));
+        assert!(json2.contains("\"pending\":true"));
     }
 }

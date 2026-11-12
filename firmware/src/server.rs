@@ -44,7 +44,7 @@ pub async fn server_task(stack: Stack<'static>) {
             }
         };
         if accepted {
-            handle(&mut socket, publisher.as_ref(), rxb, body).await;
+            handle(&mut socket, stack, publisher.as_ref(), rxb, body).await;
             // Критично: дождаться реальной отправки ответа — socket.abort() или
             // ранний drop топят TX-буфер (клиент видит Connection reset вместо
             // ответа). НО flush().await без лимита ждёт не только ACK данных, а
@@ -79,6 +79,7 @@ pub async fn server_task(stack: Stack<'static>) {
 
 async fn handle<'a>(
     socket: &mut TcpSocket<'a>,
+    stack: Stack<'static>,
     publisher: Option<&OtaPublisher<'_>>,
     reqbuf: &mut [u8],
     body: &mut String<4096>,
@@ -118,7 +119,7 @@ async fn handle<'a>(
     };
 
     if method != "GET" {
-        respond(socket, "400 Bad Request", "only GET is supported\n").await;
+        respond(socket, "400 Bad Request", "text/plain", "only GET is supported\n").await;
         return;
     }
 
@@ -128,12 +129,35 @@ async fn handle<'a>(
     };
 
     match path {
-        "/" | "/status" => {
+        "/" => {
+            respond_html(socket, clock_core::page::PAGE_HTML).await;
+        }
+        "/api/status" => {
+            body.clear();
+            let mut ipbuf: heapless::String<45> = heapless::String::new();
+            if let Some(cfg) = stack.config_v4() {
+                let _ = write!(ipbuf, "{}", cfg.address());
+            }
+            let snap = clock_core::StatusSnapshot {
+                uptime_secs: Instant::now().as_secs(),
+                fw: env!("CARGO_PKG_NAME"),
+                version: env!("CARGO_PKG_VERSION"),
+                ip: if ipbuf.is_empty() { None } else { Some(ipbuf.as_str()) },
+                ota_state: &current_ota_state_str(),
+                pending: PENDING_BOOT.load(Ordering::SeqCst),
+                confirmed: BOOT_CONFIRMED.load(Ordering::SeqCst),
+                latched: ROLLBACK_LATCHED.load(Ordering::SeqCst),
+                busy: OTA_BUSY.load(Ordering::SeqCst),
+            };
+            let _ = write!(body, "{}", snap);
+            respond(socket, "200 OK", "application/json", body.as_str()).await;
+        }
+        "/status" => {
             status_body(body);
             let _ = write!(body, "log_url={}\n", LOG_URL);
-            respond(socket, "200 OK", body.as_str()).await;
+            respond(socket, "200 OK", "text/plain; charset=utf-8", body.as_str()).await;
         }
-        "/logs" => {
+        "/logs" | "/api/logs" => {
             logger::dump_into(body);
             if body.is_empty() {
                 let _ = body.push_str("(log buffer empty)\n");
@@ -141,7 +165,7 @@ async fn handle<'a>(
             respond(socket, "200 OK", body.as_str()).await;
         }
         "/revert" => {
-            respond(socket, "200 OK", "marking current image INVALID, resetting\n").await;
+            respond(socket, "200 OK", "text/plain", "marking current image INVALID, resetting\n").await;
             log::warn!("/revert: marking the current image invalid");
             ROLLBACK_LATCHED.store(true, Ordering::SeqCst);
             OTA_LOCK.lock(|cell| {
@@ -165,21 +189,22 @@ async fn handle<'a>(
                 respond(
                     socket,
                     "400 Bad Request",
+                    "text/plain",
                     "usage: GET /ota?url=http://host:port/firmware.bin\n",
                 )
                 .await;
                 return;
             }
             if OTA_BUSY.load(Ordering::SeqCst) {
-                respond(socket, "409 Conflict", "another OTA in progress\n").await;
+                respond(socket, "409 Conflict", "text/plain", "another OTA in progress\n").await;
                 return;
             }
             match publisher {
                 Some(p) => match p.try_publish(OtaRequest { url }) {
-                    Ok(()) => respond(socket, "200 OK", "OTA scheduled, watch device logs\n").await,
-                    Err(_) => respond(socket, "409 Conflict", "OTA queue full\n").await,
+                    Ok(()) => respond(socket, "200 OK", "text/plain", "OTA scheduled, watch device logs\n").await,
+                    Err(_) => respond(socket, "409 Conflict", "text/plain", "OTA queue full\n").await,
                 },
-                None => respond(socket, "500 Internal Server Error", "OTA channel unavailable\n")
+                None => respond(socket, "500 Internal Server Error", "text/plain", "OTA channel unavailable\n")
                     .await,
             }
         }
@@ -187,11 +212,40 @@ async fn handle<'a>(
             respond(
                 socket,
                 "404 Not Found",
-                "endpoints: / /status /logs /ota?url=... /revert\n",
+                "text/plain",
+                "endpoints: / /api/status /status /logs /api/logs /ota?url=... /revert\n",
             )
             .await;
         }
     }
+}
+
+/// Состояние OTA-слота одной строкой для JSON (ище строки короче 32 символов).
+fn current_ota_state_str() -> heapless::String<32> {
+    let mut s: heapless::String<32> = String::new();
+    match OTA_LOCK.lock(|cell| {
+        cell.borrow_mut()
+            .as_mut()
+            .map(|u| u.current_ota_state())
+    }) {
+        Some(Ok(st)) => {
+            let _ = write!(s, "{:?}", st);
+        }
+        Some(Err(_)) => s.push_str("Error"),
+        None => s.push_str("no_updater"),
+    }
+    s
+}
+
+async fn respond_html<'a>(socket: &mut TcpSocket<'a>, html: &str) {
+    let mut headers: String<256> = String::new();
+    let _ = write!(
+        headers,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        html.len()
+    );
+    write_all(socket, headers.as_bytes()).await;
+    write_all(socket, html.as_bytes()).await;
 }
 
 fn status_body(body: &mut String<4096>) {
@@ -222,14 +276,15 @@ fn status_body(body: &mut String<4096>) {
     );
 }
 
-async fn respond<'a>(socket: &mut TcpSocket<'a>, status: &str, body: &str) {
+async fn respond<'a>(socket: &mut TcpSocket<'a>, status: &str, content_type: &str, body: &str) {
     // Короткий заголовок живёт на стеке задачи — статический буфер здесь
     // не нужен и не должен писаться в StaticCell повторно.
     let mut headers: String<256> = String::new();
     let _ = write!(
         headers,
-        "HTTP/1.1 {}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {}\r\nContent-Type: {}; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         status,
+        content_type,
         body.len()
     );
     write_all(socket, headers.as_bytes()).await;
