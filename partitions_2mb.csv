@@ -1,0 +1,9 @@
+# ESP32 classic, 2 MB flash (ESP-IDF log: "SPI Flash Size : 2MB").
+# Dual-slot без factory: ota_0 = начальный слот (первый app в таблице),
+# ota_1 = OTA-цель. Откат = стандартный ESP-IDF rollback по otadata.
+# ВАЖНО: espflash --merge требует offsets/sizes app-партиций кратными 0x10000.
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+phy_init, data, phy,     0x10000,  0x1000,
+ota_0,    app,  ota_0,   0x20000,  0xE0000,
+ota_1,    app,  ota_1,   0x100000, 0xE0000,

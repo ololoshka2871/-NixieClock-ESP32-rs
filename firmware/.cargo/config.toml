@@ -1,0 +1,28 @@
+[build]
+target = "xtensa-esp32-none-elf"
+
+[target.xtensa-esp32-none-elf]
+runner = "espflash flash --monitor"
+rustflags = [
+  # GNU LD: esp-hal linker script (rtc/iram/dram sections) — обязателен,
+  # иначе undefined reference к _rtc_fast_* / _iram_* (esp-hal build.rs
+  # кладёт скрипты в OUT_DIR, но не передаёт их линкеру сам).
+  "-C", "link-arg=-Wl,-Tlinkall.x",
+  "-C", "link-arg=-nostartfiles",
+]
+
+# WiFi credentials and log collector — EDIT HERE before building:
+[env]
+# esp-hal 1.2.2 требует для классического ESP32 ревизию >= v3.0 (min-chip-revision
+# по умолчанию 300) и меттит этим образ (build_info.MIN_CHIP_REVISION), из-за чего
+# IDF-загрузчик на платах v1.0/v2.x отказывается грузить приложение
+# ("Image requires chip rev >= v3.0"). Снимаем ограничение до v1.0: errata старых
+# ревизий касаются в основном PSRAM/cache/RTC, WiFi на v1.0 работает.
+# Формат значения: major * 100 + minor (100 = v1.0, 0 = без ограничения).
+ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"
+SSID = "YOUR_WIFI_SSID"
+PASSWORD = "***"
+LOG_URL = "http://192.168.0.28/logs"
+
+[unstable]
+build-std = ["core", "alloc"]
