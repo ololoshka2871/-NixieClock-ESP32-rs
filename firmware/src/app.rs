@@ -1,7 +1,7 @@
 //! Бизнес-часть приложения: демо-задача + монитор программного watchdog.
 //! Замените демо на свою логику, переиспользуемое выносите в крейт clock-core.
 
-use app_core::Watchdog;
+use clock_core::Watchdog;
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     mutex::Mutex,
@@ -29,7 +29,7 @@ pub async fn app_task() {
         cycle += 1;
         APP_WD.lock().await.feed(now_ms());
         if cycle % 5 == 0 {
-            let led = app_core::blink_pattern(cycle / 5, &[true, false, false, false]);
+            let led = clock_core::blink_pattern(cycle / 5, &[true, false, false, false]);
             log::info!(
                 "app: cycle {} led={} watchdog fed (period {}ms)",
                 cycle,
