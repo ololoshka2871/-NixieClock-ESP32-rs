@@ -1,13 +1,115 @@
-:root{--bg:#12100d;--fg:#e8dcc4;--acc:#ff9d45;--dim:#8a7f6a;--card:#1d1a15;--ok:#7ac74c;--warn:#ffcc66;--err:#ff6b6b}
-*{box-sizing:border-box}body{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;margin:0;padding:16px;max-width:860px;margin-inline:auto}
-h1{font-size:20px;color:var(--acc);margin:0 0 12px}h2{font-size:14px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 6px}
-.card{background:var(--card);border:1px solid #2c2820;border-radius:10px;padding:10px 14px}
-.kv{display:grid;grid-template-columns:14ch 1fr;gap:2px 10px}
-.kv b{color:var(--dim);font-weight:600}
-button{background:var(--acc);color:#191510;border:0;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer}
-button.sec{background:#2c2820;color:var(--fg)}
-input[type=text]{width:100%;background:#0d0b08;color:var(--fg);border:1px solid #2c2820;border-radius:8px;padding:8px}
-pre{white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;background:#0d0b08;border-radius:8px;padding:8px;font-size:12.5px}
-.row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
-#ota_state.ok{color:var(--ok)}#ota_state.warn{color:var(--warn)}#ota_state.err{color:var(--err)}
-.note{color:var(--dim);font-size:13px}
+:root {
+    --bg: #12100d;
+    --fg: #e8dcc4;
+    --acc: #ff9d45;
+    --dim: #8a7f6a;
+    --card: #1d1a15;
+    --ok: #7ac74c;
+    --warn: #ffcc66;
+    --err: #ff6b6b
+}
+
+* {
+    box-sizing: border-box
+}
+
+body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.45 system-ui, sans-serif;
+    margin: 0;
+    padding: 16px;
+    max-width: 860px;
+    margin-inline: auto
+}
+
+h1 {
+    font-size: 20px;
+    color: var(--acc);
+    margin: 0 0 12px
+}
+
+h2 {
+    font-size: 14px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin: 18px 0 6px
+}
+
+.card {
+    background: var(--card);
+    border: 1px solid #2c2820;
+    border-radius: 10px;
+    padding: 10px 14px
+}
+
+.kv {
+    display: grid;
+    grid-template-columns: 14ch 1fr;
+    gap: 2px 10px
+}
+
+.kv b {
+    color: var(--dim);
+    font-weight: 600
+}
+
+button {
+    background: var(--acc);
+    color: #191510;
+    border: 0;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-weight: 700;
+    cursor: pointer
+}
+
+button.sec {
+    background: #2c2820;
+    color: var(--fg)
+}
+
+input[type=text] {
+    width: 100%;
+    background: #0d0b08;
+    color: var(--fg);
+    border: 1px solid #2c2820;
+    border-radius: 8px;
+    padding: 8px
+}
+
+pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 220px;
+    overflow: auto;
+    background: #0d0b08;
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 12.5px
+}
+
+.row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap
+}
+
+#ota_state.ok {
+    color: var(--ok)
+}
+
+#ota_state.warn {
+    color: var(--warn)
+}
+
+#ota_state.err {
+    color: var(--err)
+}
+
+.note {
+    color: var(--dim);
+    font-size: 13px
+}
