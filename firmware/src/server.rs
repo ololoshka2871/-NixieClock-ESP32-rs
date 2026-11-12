@@ -136,7 +136,11 @@ async fn handle<'a>(
             body.clear();
             let mut ipbuf: heapless::String<45> = heapless::String::new();
             if let Some(cfg) = stack.config_v4() {
-                let _ = write!(ipbuf, "{}", cfg.address());
+                // StaticConfigV4.address — StackedIpAddr; Display печатает "a.b.c.d/prefix"
+                let _ = write!(ipbuf, "{}", cfg.address);
+                if let Some((ip, _)) = ipbuf.split_once('/') {
+                    ipbuf.truncate(ip.len());
+                }
             }
             let snap = clock_core::StatusSnapshot {
                 uptime_secs: Instant::now().as_secs(),
@@ -162,7 +166,7 @@ async fn handle<'a>(
             if body.is_empty() {
                 let _ = body.push_str("(log buffer empty)\n");
             }
-            respond(socket, "200 OK", body.as_str()).await;
+            respond(socket, "200 OK", "text/plain; charset=utf-8", body.as_str()).await;
         }
         "/revert" => {
             respond(socket, "200 OK", "text/plain", "marking current image INVALID, resetting\n").await;

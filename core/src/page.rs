@@ -97,7 +97,7 @@ mod tests {
         }
         assert!(!PAGE_HTML.contains("http://localhost"), "no dev leftovers");
         // относительные fetch -> страница работает с любого адреса платы
-        assert!(PAGE_HTML.contains("fetch(\"/api/status\""));
+        assert!(PAGE_HTML.contains("j(\"/api/status\")"));
         assert!(PAGE_HTML.contains("fetch(\"/logs\""));
     }
 
