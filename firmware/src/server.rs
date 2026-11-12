@@ -235,8 +235,12 @@ fn current_ota_state_str() -> heapless::String<32> {
         Some(Ok(st)) => {
             let _ = write!(s, "{:?}", st);
         }
-        Some(Err(_)) => s.push_str("Error"),
-        None => s.push_str("no_updater"),
+        Some(Err(_)) => {
+            s.push_str("Error").ok();
+        }
+        None => {
+            s.push_str("no_updater").ok();
+        }
     }
     s
 }
