@@ -195,10 +195,13 @@ async fn handle<'a>(
             let aw = crate::settings::active_wifi();
             let (epoch, civil, tsource, synced) = crate::clock::snapshot().await;
             // M5: показания датчиков (None, если таск ещё не отчитался).
+            // temp_mc из 1-Wire кодека — микроградусы (разрешение DS18B20 1/16 °C,
+            // целые миллиградусы не выразимы); приводим к общему знаменателю JSON —
+            // все температуры в milli-°C (как co2_temp_mc), усечение < 0.1 °C.
             let (temp_mc, co2_ppm, co2_temp_mc, v33_mv, v5_mv, v12_mv) = {
                 let s = crate::sensors::SENSORS.lock().await;
                 (
-                    s.temp_mc,
+                    s.temp_mc.map(|mc| mc / 1000),
                     s.co2_ppm,
                     s.co2_temp_mc,
                     s.v33_mv,

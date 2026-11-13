@@ -185,7 +185,11 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
             }
         }
         match temp_mc {
-            Some(mc) => log::info!("ds18x20: {}.{} C", mc / 1000, (mc % 1000).abs()),
+            Some(mc) => log::info!(
+                "ds18x20: {}.{} C",
+                mc / 100_000,
+                (mc % 100_000).abs()
+            ),
             None => log::warn!(
                 "ds18x20: нет чтения (presence={}, reset2={}, sp={:02X?})",
                 present,
