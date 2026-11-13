@@ -10,6 +10,11 @@ async function poll() {
         $("ip").textContent = s.ip || "нет IP (wifi не подключён)";
         $("gw").textContent = s.gateway || (s.dhcp_done ? "нет (роутер не передаёт шлюз)" : "нет (DHCP не завершён)");
         $("dns").textContent = s.dns || (s.dhcp_done ? "нет (роутер не передаёт DNS)" : "нет (DHCP не завершён)");
+        $("sensor_temp").textContent = s.temp_mc == null ? "нет данных" : (s.temp_mc / 1000).toFixed(1) + " °C";
+        $("sensor_co2").textContent = s.co2_ppm == null ? "нет данных" : s.co2_ppm + " ppm";
+        $("sensor_v33").textContent = s.v33_mv == null ? "нет данных" : (s.v33_mv / 1000).toFixed(2) + " В";
+        $("sensor_v5").textContent = s.v5_mv == null ? "нет данных" : (s.v5_mv / 1000).toFixed(2) + " В";
+        $("sensor_v12").textContent = s.v12_mv == null ? "нет данных" : (s.v12_mv / 1000).toFixed(2) + " В";
         $("wifi_cur").textContent = s.wifi_ssid || "—";
         $("wifi_src").textContent = s.wifi_saved ? "из NVS (сохранены)" : "из прошивки (env)";
         const el = $("ota_state"); el.textContent = s.ota_state + (s.pending ? " (ждет подтверждения)" : "");

@@ -30,14 +30,17 @@ use esp_bootloader_esp_idf::{
     },
 };
 use esp_hal::{
+    analog::adc::{Adc, AdcCalLine, AdcConfig, Attenuation},
     clock::CpuClock,
     i2c::master::{Config as I2cConfig, I2c},
+    peripherals::{ADC1, GPIO34, GPIO35, GPIO39},
     ram,
     rng::Rng,
     rtc_cntl::{Rtc, RwdtStage},
     system::software_reset,
     time::{Duration as HalDuration, Rate},
     timer::timg::TimerGroup,
+    uart::{Config as UartConfig, Uart},
 };
 use esp_radio::wifi::{
     sta::StationConfig, AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig,
@@ -61,6 +64,7 @@ mod clock;
 mod flashcell;
 mod icmp;
 mod logger;
+mod sensors;
 mod server;
 mod settings;
 mod updater;
@@ -289,6 +293,39 @@ async fn main(spawner: Spawner) -> ! {
         Ok(i2c) => spawner.spawn(clock::clock_task(i2c).unwrap()),
         Err(e) => log::warn!("I2C0 init failed ({:?}): DS1307 unavailable, time via SNTP/HTTP only", e),
     }
+    // M5: датчики. DS18x20 — GPIO4; MH-Z19 — UART2 (RX=GPIO16, TX=GPIO17;
+    // зонд подтвердил пригодность пинов, доке-предупреждение про UART2 на
+    // старых ревизиях нас не касается: MIN_CHIP_REVISION=100); шины питания —
+    // ADC1 GPIO39/35/34 (input-only, никем не заняты), аттенюация 0 dB
+    // (~1.1 В полный шкал; с делителей приходит 0.48–0.58 В), калибровка по eFuse.
+    spawner.spawn(sensors::onewire_task(peripherals.GPIO4).unwrap());
+    match Uart::new(peripherals.UART2, UartConfig::default().with_baudrate(9600)) {
+        Ok(uart) => spawner.spawn(
+            sensors::mhz19_task(
+                uart.with_rx(peripherals.GPIO16)
+                    .with_tx(peripherals.GPIO17)
+                    .into_async(),
+            )
+            .unwrap(),
+        ),
+        Err(e) => log::warn!("UART2 init failed ({:?}): MH-Z19 unavailable", e),
+    }
+    let mut adc_cfg = AdcConfig::new();
+    let p33 = adc_cfg.enable_pin_with_cal::<GPIO39<'static>, AdcCalLine<ADC1<'static>>>(
+        peripherals.GPIO39,
+        Attenuation::_0dB,
+    );
+    let p5 = adc_cfg.enable_pin_with_cal::<GPIO35<'static>, AdcCalLine<ADC1<'static>>>(
+        peripherals.GPIO35,
+        Attenuation::_0dB,
+    );
+    let p12 = adc_cfg.enable_pin_with_cal::<GPIO34<'static>, AdcCalLine<ADC1<'static>>>(
+        peripherals.GPIO34,
+        Attenuation::_0dB,
+    );
+    spawner.spawn(
+        sensors::adc_task(Adc::new(peripherals.ADC1, adc_cfg), p33, p5, p12).unwrap(),
+    );
     spawner.spawn(clock::sntp_task(stack).unwrap());
     spawner.spawn(connection(controller).unwrap());
     spawner.spawn(status_task(stack).unwrap());

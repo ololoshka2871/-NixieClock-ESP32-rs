@@ -120,6 +120,11 @@ pub fn adc_raw_to_rail_mv(raw: u16, bits: u8, fs_mv: u32, ratio_x1000: u32) -> u
     pin_mv * ratio_x1000 / 1000
 }
 
+/// Откалиброванный по eFuse пин (милливольты на пине) -> напряжение шины.
+pub fn pin_mv_to_rail_mv(pin_mv: u16, ratio_x1000: u32) -> u32 {
+    pin_mv as u32 * ratio_x1000 / 1000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

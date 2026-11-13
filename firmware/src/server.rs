@@ -194,6 +194,18 @@ async fn handle<'a>(
             let ntp_saved = crate::settings::load_ntp();
             let aw = crate::settings::active_wifi();
             let (epoch, civil, tsource, synced) = crate::clock::snapshot().await;
+            // M5: показания датчиков (None, если таск ещё не отчитался).
+            let (temp_mc, co2_ppm, co2_temp_mc, v33_mv, v5_mv, v12_mv) = {
+                let s = crate::sensors::SENSORS.lock().await;
+                (
+                    s.temp_mc,
+                    s.co2_ppm,
+                    s.co2_temp_mc,
+                    s.v33_mv,
+                    s.v5_mv,
+                    s.v12_mv,
+                )
+            };
             let snap = clock_core::StatusSnapshot {
                 uptime_secs: Instant::now().as_secs(),
                 fw: env!("CARGO_PKG_NAME"),
@@ -214,6 +226,12 @@ async fn handle<'a>(
                 gateway: if gwbuf.is_empty() { None } else { Some(gwbuf.as_str()) },
                 dhcp_done,
                 dns: if dnsbuf.is_empty() { None } else { Some(dnsbuf.as_str()) },
+                temp_mc,
+                co2_ppm,
+                co2_temp_mc,
+                v33_mv,
+                v5_mv,
+                v12_mv,
             };
             let _ = write!(body, "{}", snap);
             respond(socket, "200 OK", "application/json", body.as_str()).await;

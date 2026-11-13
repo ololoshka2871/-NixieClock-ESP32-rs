@@ -87,6 +87,19 @@ pub struct StatusSnapshot<'a> {
     pub dhcp_done: bool,
     /// Первый DNS-сервер из DHCP (тот же смысл None, что у gateway).
     pub dns: Option<&'a str>,
+    /// M5-датчики (None, пока нет первого успешного замера).
+    /// Температура DS18x20, миллиградусы Цельсия.
+    pub temp_mc: Option<i32>,
+    /// CO2 с MH-Z19, ppm.
+    pub co2_ppm: Option<u16>,
+    /// Температура самого MH-Z19, миллиградусы.
+    pub co2_temp_mc: Option<i32>,
+    /// Напряжение шины 3.3 В (АЦП GPIO39 × делитель 5.7), милливольты.
+    pub v33_mv: Option<u32>,
+    /// Напряжение шины 5 В (АЦП GPIO35 × делитель 10.1), милливольты.
+    pub v5_mv: Option<u32>,
+    /// Напряжение шины 12 В (АЦП GPIO34 × делитель 25), милливольты.
+    pub v12_mv: Option<u32>,
 }
 
 impl StatusSnapshot<'_> {
@@ -138,8 +151,41 @@ impl StatusSnapshot<'_> {
             Some(d) => write!(out, ",\"dns\":\"{}\"", d)?,
             None => out.write_str(",\"dns\":null")?,
         }
+        match self.temp_mc {
+            Some(v) => write!(out, ",\"temp_mc\":{}", v)?,
+            None => out.write_str(",\"temp_mc\":null")?,
+        }
+        match self.co2_ppm {
+            Some(v) => write!(out, ",\"co2_ppm\":{}", v)?,
+            None => out.write_str(",\"co2_ppm\":null")?,
+        }
+        match self.co2_temp_mc {
+            Some(v) => write!(out, ",\"co2_temp_mc\":{}", v)?,
+            None => out.write_str(",\"co2_temp_mc\":null")?,
+        }
+        write!(
+            out,
+            ",\"v33_mv\":{},\"v5_mv\":{},\"v12_mv\":{}",
+            opt_u32(self.v33_mv),
+            opt_u32(self.v5_mv),
+            opt_u32(self.v12_mv),
+        )?;
         out.write_str("}")
     }
+}
+
+/// None -> "null", Some -> число (для компактной встав в JSON).
+struct OptU32(Option<u32>);
+impl core::fmt::Display for OptU32 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some(v) => write!(f, "{}", v),
+            None => f.write_str("null"),
+        }
+    }
+}
+fn opt_u32(v: Option<u32>) -> OptU32 {
+    OptU32(v)
 }
 
 impl core::fmt::Display for StatusSnapshot<'_> {
@@ -226,16 +272,37 @@ mod tests {
             gateway: Some("192.168.0.1"),
             dhcp_done: true,
             dns: Some("192.168.0.1"),
+            temp_mc: Some(25_000),
+            co2_ppm: Some(500),
+            co2_temp_mc: Some(25_000),
+            v33_mv: Some(3300),
+            v5_mv: Some(5050),
+            v12_mv: Some(12100),
         };
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\"}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100}"
         );
-        let s2 = StatusSnapshot { ip: None, time: None, ota_state: "New", pending: true, ..s };
+        let s2 = StatusSnapshot {
+            ip: None,
+            time: None,
+            ota_state: "New",
+            pending: true,
+            temp_mc: None,
+            co2_ppm: None,
+            co2_temp_mc: None,
+            v33_mv: None,
+            v5_mv: None,
+            v12_mv: None,
+            ..s
+        };
         let json2 = alloc::format!("{}", s2);
         assert!(json2.contains("\"ip\":null"));
         assert!(json2.contains("\"time\":null"));
         assert!(json2.contains("\"pending\":true"));
+        assert!(json2.contains("\"temp_mc\":null"));
+        assert!(json2.contains("\"co2_ppm\":null"));
+        assert!(json2.contains("\"v12_mv\":null"));
     }
 }
