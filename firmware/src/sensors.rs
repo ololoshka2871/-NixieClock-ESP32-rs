@@ -181,7 +181,7 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
                 }
                 ow.release();
                 sp = Some(buf);
-                temp_mc = codec::ds18x20_scratchpad(&buf[..8].try_into().unwrap());
+                temp_mc = codec::ds18x20_scratchpad(&buf);
             }
         }
         match temp_mc {

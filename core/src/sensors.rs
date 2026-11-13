@@ -85,14 +85,19 @@ pub fn crc8_dallas(bytes: &[u8]) -> u8 {
     crc
 }
 
-/// Разобрать scratchpad DS18x20 по канону 1-Wire (Read Scratchpad 0xBE):
-/// [TL, TH, CONFIG, SCRATCHPAD, RA, RES1, RES2, CRC8] (extended CRC отбрасываем).
+/// Разобрать scratchpad DS18x20 (Read Scratchpad 0xBE).
+/// DS18B20: 9 байт, CRC8 на позиции 8; DS18S20: 8 байт + заполнитель.
 /// Возвращает температуру в микроградусах (raw × 62_500).
-pub fn ds18x20_scratchpad(sp8: &[u8; 8]) -> Option<i32> {
-    if crc8_dallas(&sp8[..7]) != sp8[7] {
+/// Декод Read Scratchpad DS18x20. Принимает 9 байт и поддерживает обе раскладки:
+/// DS18B20 (канон: CRC8 на индексе 8 поверх байтов 0..7) и легаси DS18S20
+/// (CRC8 на индексе 7 поверх байтов 0..6). Температура — raw[1:0] в 1/16 °C.
+pub fn ds18x20_scratchpad(sp: &[u8; 9]) -> Option<i32> {
+    let b20 = crc8_dallas(&sp[..8]) == sp[8];
+    let s20 = crc8_dallas(&sp[..7]) == sp[7];
+    if !b20 && !s20 {
         return None;
     }
-    let raw = i16::from_le_bytes([sp8[0], sp8[1]]);
+    let raw = i16::from_le_bytes([sp[0], sp[1]]);
     Some(raw as i32 * 62_500)
 }
 
@@ -180,15 +185,19 @@ mod tests {
 
     #[test]
     fn ds18x20_scratchpad_positive_and_negative() {
-        // канон Read Scratchpad: +25.0000 °C (raw 400 = 0x0190)
-        let sp = [0x90u8, 0x01, 0x1F, 0x00, 0xFF, 0x10, 0x10, 0xEB];
+        // канон DS18S20-раскладки: +25.0000 °C (raw 400 = 0x0190), CRC на b7
+        let sp = [0x90u8, 0x01, 0x1F, 0x00, 0xFF, 0x10, 0x10, 0xEB, 0xFF];
         assert_eq!(ds18x20_scratchpad(&sp), Some(25_000_000));
         // −10.0625 °C (raw −161 = 0xFF5F)
-        let neg = [0x5Fu8, 0xFF, 0x1F, 0x00, 0xFF, 0x10, 0x10, 0x98];
+        let neg = [0x5Fu8, 0xFF, 0x1F, 0x00, 0xFF, 0x10, 0x10, 0x98, 0xFF];
         assert_eq!(ds18x20_scratchpad(&neg), Some(-10_062_500));
-        // битый CRC
-        let mut bad = sp;
-        bad[7] = 0;
+        // живой кадр DS18B20 с платы (v0.5.2 диагностика): CRC на b8, 28.3125 °C
+        let b20 = [0xC5u8, 0x01, 0x55, 0x05, 0x7F, 0x7E, 0x81, 0x66, 0xDD];
+        assert_eq!(ds18x20_scratchpad(&b20), Some(28_312_500));
+        // битый CRC (обе раскладки не сходятся)
+        let mut bad = b20;
+        bad[8] = 0;
+        bad[7] ^= 0x20;
         assert_eq!(ds18x20_scratchpad(&bad), None);
         // ROM-код: family 0x28
         assert!(ds18x20_check_rom(&[0x28, 0xE0, 0x02, 0xFF, 0xFF, 0x00, 0x00, 0x8D]));
