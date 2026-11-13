@@ -35,7 +35,16 @@
     </div>
 
     <h2>Время</h2>
-    <div class="card"><span class="note">DS1307 + NTP + часовой пояс — модуль M4.</span></div>
+    <div class="card">
+        <div class="kv">
+            <b>сейчас (UTC)</b><span id="time_now" class="big">—</span>
+            <b>источник</b><span id="time_src">—</span>
+        </div>
+        <div class="row"><input type="datetime-local" id="time_set_in" step="1"><button id="time_btn">Установить
+                вручную</button></div>
+        <div id="time_msg" class="note">DS1307 (I2C0) + SNTP каждые 24 ч. Ручная установка — UTC-время, когда нет сети;
+            после установки пишется в DS1307.</div>
+    </div>
 
     <h2>Дисплей</h2>
     <div class="card"><span class="note">яркость/режимы индикации — модуль M5.</span></div>

@@ -128,21 +128,31 @@ async fn handle<'a>(
         None => (path, ""),
     };
 
-    // POST принят ровно на один маршрут — сохранение Wi-Fi настроек.
+    // POST принимается на два маршрута: сохранение Wi-Fi и ручная установка
+    // времени (HTTP-путь, унаследованный от оригинала как запас без сети).
     if method == "POST" {
-        if path != "/api/wifi/connect" {
-            respond(
-                socket,
-                "405 Method Not Allowed",
-                "text/plain",
-                "POST is only accepted on /api/wifi/connect\n",
-            )
-            .await;
-            return;
+        match path {
+            "/api/wifi/connect" => {
+                let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+                read_post_body(socket, reqbuf, &mut raw, len).await;
+                handle_wifi_connect(socket, raw.as_slice()).await;
+            }
+            "/api/time" => {
+                // capacity обязана совпадать с сигнатурой read_post_body (512).
+                let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+                read_post_body(socket, reqbuf, &mut raw, len).await;
+                handle_time_set(socket, raw.as_slice()).await;
+            }
+            _ => {
+                respond(
+                    socket,
+                    "405 Method Not Allowed",
+                    "text/plain",
+                    "POST is accepted on /api/wifi/connect and /api/time\n",
+                )
+                .await;
+            }
         }
-        let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
-        read_post_body(socket, reqbuf, &mut raw, len).await;
-        handle_wifi_connect(socket, raw.as_slice()).await;
         return;
     }
 
@@ -167,6 +177,7 @@ async fn handle<'a>(
                 }
             }
             let aw = crate::settings::active_wifi();
+            let (epoch, civil, tsource, synced) = crate::clock::snapshot().await;
             let snap = clock_core::StatusSnapshot {
                 uptime_secs: Instant::now().as_secs(),
                 fw: env!("CARGO_PKG_NAME"),
@@ -179,6 +190,10 @@ async fn handle<'a>(
                 busy: OTA_BUSY.load(Ordering::SeqCst),
                 wifi_ssid: if aw.ssid.is_empty() { None } else { Some(aw.ssid.as_str()) },
                 wifi_saved: aw.from_nvs,
+                time_epoch: epoch,
+                time: Some(civil.as_str()),
+                time_source: tsource.as_str(),
+                time_synced: synced,
             };
             let _ = write!(body, "{}", snap);
             respond(socket, "200 OK", "application/json", body.as_str()).await;
@@ -240,7 +255,7 @@ async fn handle<'a>(
                 socket,
                 "404 Not Found",
                 "text/plain",
-                "endpoints: / /api/status /status /logs /api/logs /ota?url=... /revert\n",
+                "endpoints: / /api/status /status /logs /api/logs /ota?url=... /revert (POST /api/wifi/connect, /api/time)\n",
             )
             .await;
         }
@@ -299,6 +314,29 @@ async fn read_post_body<'a>(
             }
         }
     }
+}
+
+/// POST /api/time: ручная установка epoch (секунды Unix) — HTTP-путь из
+/// оригинала, работает когда нет NTP/DHCP. Валидация диапазона — в core.
+async fn handle_time_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
+    let text = core::str::from_utf8(raw).unwrap_or("");
+    let Some(v) = text.split('&').find_map(|p| p.strip_prefix("epoch=")) else {
+        respond(socket, "400 Bad Request", "text/plain", "usage: epoch=<unix-seconds>\n").await;
+        return;
+    };
+    let Ok(epoch) = v.trim().parse::<u64>() else {
+        respond(socket, "400 Bad Request", "text/plain", "epoch must be unix seconds\n").await;
+        return;
+    };
+    if epoch < 1_700_000_000 || epoch > 4_102_444_800 {
+        respond(socket, "400 Bad Request", "text/plain", "epoch out of range 2023..2100\n").await;
+        return;
+    }
+    crate::clock::sync(epoch, clock_core::time::TimeSource::Http).await;
+    let civil = clock_core::time::epoch_to_civil(epoch);
+    let mut msg: String<96> = String::new();
+    let _ = write!(msg, "{{\"status\":\"set\",\"time\":\"{}\"}}\n", civil);
+    respond(socket, "200 OK", "application/json", msg.as_str()).await;
 }
 
 /// POST /api/wifi/connect: валидация (core::settings) -> запись в NVS ->

@@ -12,6 +12,8 @@ async function poll() {
         $("wifi_src").textContent = s.wifi_saved ? "из NVS (сохранены)" : "из прошивки (env)";
         const el = $("ota_state"); el.textContent = s.ota_state + (s.pending ? " (ждет подтверждения)" : "");
         el.className = s.ota_state === "Valid" ? "ok" : (s.pending || s.ota_state === "New" ? "warn" : "err");
+        $("time_now").textContent = s.time || "—";
+        $("time_src").textContent = (s.time_source || "?") + (s.time_synced ? "" : " (не подтверждено)");
     } catch (e) { $("uptime").textContent = "сервер недоступен" }
 }
 poll(); setInterval(poll, 3000);
@@ -35,4 +37,18 @@ $("wifi_btn").onclick = async () => {
         const j = await r.json();
         $("wifi_msg").textContent = j.status === "saved" ? "сохранено в NVS, перезагрузка…" : "ошибка: " + (j.error || r.status);
     } catch (e) { $("wifi_msg").textContent = "ошибка: " + e }
+};
+
+$("time_btn").onclick = async () => {
+    const v = $("time_set_in").value;
+    if (!v) { $("time_msg").textContent = "выберите дату и время (UTC)"; return; }
+    const ep = Math.floor(Date.parse(v + "Z") / 1000); // datetime-local трактуем как UTC
+    if (isNaN(ep)) { $("time_msg").textContent = "не читается дата"; return; }
+    $("time_msg").textContent = "устанавливаю…";
+    try {
+        const r = await fetch("/api/time", { method: "POST", body: "epoch=" + ep });
+        const j = await r.json();
+        $("time_msg").textContent = r.ok ? ("установлено: " + j.time + " UTC") : ("ошибка: " + (r.status));
+        poll();
+    } catch (e) { $("time_msg").textContent = "ошибка: " + e }
 };

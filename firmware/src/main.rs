@@ -31,11 +31,12 @@ use esp_bootloader_esp_idf::{
 };
 use esp_hal::{
     clock::CpuClock,
+    i2c::master::{Config as I2cConfig, I2c},
     ram,
     rng::Rng,
     rtc_cntl::{Rtc, RwdtStage},
     system::software_reset,
-    time::Duration as HalDuration,
+    time::{Duration as HalDuration, Rate},
     timer::timg::TimerGroup,
 };
 use esp_radio::wifi::{
@@ -56,6 +57,7 @@ macro_rules! mkstatic {
 }
 
 mod app;
+mod clock;
 mod flashcell;
 mod icmp;
 mod logger;
@@ -253,6 +255,19 @@ async fn main(spawner: Spawner) -> ! {
     // Без light sleep: логи должны уходить без задержек.
     let _ = controller.set_power_saving(PowerSaveMode::None);
 
+    // M4: DS1307 на I2C0 (SDA=GPIO21, SCL=GPIO22, 400 kHz) — пины/адрес с
+    // оригинальной IDF-платы (RTC.cpp). Единственный владелец шины —
+    // clock_task; при отказе инициализации модель часов живёт на SNTP/HTTP.
+    let i2c_res = I2c::new(
+        peripherals.I2C0,
+        I2cConfig::default().with_frequency(Rate::from_khz(400)),
+    )
+    .map(|i2c| {
+        i2c.with_sda(peripherals.GPIO21)
+            .with_scl(peripherals.GPIO22)
+            .into_async()
+    });
+
     let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
     let (stack, runner) = embassy_net::new(
@@ -264,11 +279,17 @@ async fn main(spawner: Spawner) -> ! {
         // DnsSocket (logger + updater) и каждый TcpSocket сервера — ещё слоты,
         // каждое connect() на LOG_URL/OTA — ещё. StackResources<3> давал panic
         // "adding a socket to a full SocketSet" на первом же POST логов.
-        mkstatic!(StackResources<8>, StackResources::<8>::new()),
+        // + UDP-слот SNTP и запас на параллельные DnsSocket/TcpSocket.
+        mkstatic!(StackResources<12>, StackResources::<12>::new()),
         seed,
     );
 
     spawner.spawn(net_task(runner).unwrap());
+    match i2c_res {
+        Ok(i2c) => spawner.spawn(clock::clock_task(i2c).unwrap()),
+        Err(e) => log::warn!("I2C0 init failed ({:?}): DS1307 unavailable, time via SNTP/HTTP only", e),
+    }
+    spawner.spawn(clock::sntp_task(stack).unwrap());
     spawner.spawn(connection(controller).unwrap());
     spawner.spawn(status_task(stack).unwrap());
     spawner.spawn(server::server_task(stack).unwrap());

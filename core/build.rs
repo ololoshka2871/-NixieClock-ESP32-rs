@@ -13,6 +13,12 @@ const ASSETS: [&str; 3] = ["index.html", "style.css", "app.js"];
 fn main() {
     println!("cargo:rerun-if-changed=assets");
     println!("cargo:rerun-if-changed=build.rs");
+    // unix-время сборки — fallback для остановленной DS1307 (core::time::BUILD_EPOCH)
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    println!("cargo:rustc-env=BUILD_EPOCH={epoch}");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     for name in ASSETS {
         let src = Path::new(env!("CARGO_MANIFEST_DIR"))

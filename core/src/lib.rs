@@ -54,6 +54,7 @@ impl Watchdog {
 pub mod icmp;
 pub mod page;
 pub mod settings;
+pub mod time;
 
 /// Снимок состояния для JSON `/api/status` (SPA-подложка). Формируется в
 /// firmware, сериализуется здесь — формат тестируется на хосте.
@@ -69,6 +70,13 @@ pub struct StatusSnapshot<'a> {
     pub busy: bool,
     pub wifi_ssid: Option<&'a str>,
     pub wifi_saved: bool,
+    /// Форматированное гражданское время UTC (или None, если ещё нет).
+    pub time: Option<&'a str>,
+    pub time_epoch: u64,
+    /// Источник текущего времени: build|rtc|ntp|http.
+    pub time_source: &'a str,
+    /// Хоть раз подтверждено сетью/чипом (не просто время сборки).
+    pub time_synced: bool,
 }
 
 impl StatusSnapshot<'_> {
@@ -88,8 +96,19 @@ impl StatusSnapshot<'_> {
         }
         write!(
             out,
-            ",\"wifi_saved\":{},\"ota_state\":\"{}\",\"pending\":{},\"confirmed\":{},\"latched\":{},\"busy\":{}}}",
+            ",\"wifi_saved\":{},\"time\":",
             self.wifi_saved,
+        )?;
+        match self.time {
+            Some(t) => write!(out, "\"{}\"", t)?,
+            None => out.write_str("null")?,
+        }
+        write!(
+            out,
+            ",\"time_epoch\":{},\"time_source\":\"{}\",\"time_synced\":{},\"ota_state\":\"{}\",\"pending\":{},\"confirmed\":{},\"latched\":{},\"busy\":{}}}",
+            self.time_epoch,
+            self.time_source,
+            self.time_synced,
             self.ota_state,
             self.pending,
             self.confirmed,
@@ -175,15 +194,20 @@ mod tests {
             busy: false,
             wifi_ssid: Some("Mokrot-5G"),
             wifi_saved: true,
+            time: Some("2026-11-13 12:00:00"),
+            time_epoch: 1_763_035_200,
+            time_source: "ntp",
+            time_synced: true,
         };
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false}"
         );
-        let s2 = StatusSnapshot { ip: None, ota_state: "New", pending: true, ..s };
+        let s2 = StatusSnapshot { ip: None, time: None, ota_state: "New", pending: true, ..s };
         let json2 = alloc::format!("{}", s2);
         assert!(json2.contains("\"ip\":null"));
+        assert!(json2.contains("\"time\":null"));
         assert!(json2.contains("\"pending\":true"));
     }
 }
