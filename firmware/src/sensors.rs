@@ -22,11 +22,11 @@ use embassy_time::{Duration, Timer, with_timeout};
 use embedded_io_async::{Read, Write};
 use esp_hal::Async;
 use esp_hal::Blocking;
-use esp_hal::analog::adc::{Adc, AdcCalLine, AdcPin, Attenuation};
+use esp_hal::analog::adc::{Adc, AdcCalLine, AdcPin};
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{DriveMode, Flex, InputConfig, OutputConfig, Pin, Pull};
-use esp_hal::peripherals::{ADC1, GPIO16, GPIO17, GPIO34, GPIO35, GPIO39, GPIO4};
-use esp_hal::uart::{Config, Uart};
+use esp_hal::peripherals::{ADC1, GPIO34, GPIO35, GPIO39, GPIO4};
+use esp_hal::uart::Uart;
 use nb::block;
 
 use clock_core::sensors as codec;
@@ -151,10 +151,18 @@ impl OneWire {
 #[task]
 pub async fn onewire_task(pin: GPIO4<'static>) {
     let mut ow = OneWire::new(pin);
+    // Присутствие логируем только при изменении — по нему видно жив ли датчик,
+    // не подключён ли, или битые провода. Цикл 10 с: удобно ловить осциллографом.
+    let mut last_presence: Option<bool> = None;
     loop {
-        Timer::after_secs(30).await;
+        Timer::after_secs(10).await;
         let mut temp_mc: Option<i32> = None;
-        if ow.reset() {
+        let present = ow.reset();
+        if last_presence != Some(present) {
+            log::info!("ds18x20: presence на GPIO4 = {}", present);
+            last_presence = Some(present);
+        }
+        if present {
             ow.write_byte(codec::DS18_CMD_SKIP_ROM);
             ow.write_byte(codec::DS18_CMD_CONVERT);
             ow.release();
