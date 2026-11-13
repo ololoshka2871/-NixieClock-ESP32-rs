@@ -57,6 +57,7 @@ macro_rules! mkstatic {
 
 mod app;
 mod flashcell;
+mod icmp;
 mod logger;
 mod server;
 mod settings;
@@ -255,7 +256,9 @@ async fn main(spawner: Spawner) -> ! {
     let rng = Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
     let (stack, runner) = embassy_net::new(
-        wifi_interface,
+        // ICMP echo (ping) отвечают на уровне драйвера: smoltcp не принимает
+        // Echo Request с произвольным identifier. См. firmware/src/icmp.rs.
+        icmp::IcmpDevice::new(wifi_interface),
         embassy_net::Config::dhcpv4(Default::default()),
         // smoltcp SocketSet фиксированный: DHCP занимает 1 слот, каждый
         // DnsSocket (logger + updater) и каждый TcpSocket сервера — ещё слоты,
@@ -280,6 +283,7 @@ async fn main(spawner: Spawner) -> ! {
     // Подтверждение образа: только когда реально получили IP по DHCP.
     stack.wait_config_up().await;
     if let Some(cfg) = stack.config_v4() {
+        icmp::set_our_ip(cfg.address.address().octets());
         log::info!("got IP {}", cfg.address);
     }
     if PENDING_BOOT.load(Ordering::SeqCst) && !ROLLBACK_LATCHED.load(Ordering::SeqCst) {
@@ -307,17 +311,22 @@ async fn wdt_task(mut rtc: Rtc<'static>) {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, Interface>) {
+async fn net_task(mut runner: Runner<'static, icmp::IcmpDevice<Interface>>) {
     runner.run().await
 }
 
 /// Раз в 30 с публикуем состояние сети: без IP виден предупреждающий hb,
 /// с IP — полученный адрес. Логи идут в UART и через logfwd на LOG_URL.
+/// Заодно обновляем OUR_IP для ICMP-резолвера (ping отвечает только когда
+/// адрес известен).
 #[embassy_executor::task]
 async fn status_task(stack: Stack<'static>) {
     loop {
         match stack.config_v4() {
-            Some(cfg) => log::info!("hb: station up, ip={}", cfg.address),
+            Some(cfg) => {
+                icmp::set_our_ip(cfg.address.address().octets());
+                log::info!("hb: station up, ip={}", cfg.address);
+            }
             None => log::warn!("hb: no IP yet (wifi station not connected?)"),
         }
         Timer::after_secs(30).await;

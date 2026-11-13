@@ -51,6 +51,7 @@ impl Watchdog {
     }
 }
 
+pub mod icmp;
 pub mod page;
 pub mod settings;
 
