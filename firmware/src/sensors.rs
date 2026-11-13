@@ -157,6 +157,8 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
     loop {
         Timer::after_secs(10).await;
         let mut temp_mc: Option<i32> = None;
+        let mut sp: Option<[u8; 9]> = None;
+        let mut reset2 = false;
         let present = ow.reset();
         if last_presence != Some(present) {
             log::info!("ds18x20: presence на GPIO4 = {}", present);
@@ -168,21 +170,28 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
             ow.release();
             // 12-битная конверсия — ждём асинхронно, шина высоко на pull-up.
             Timer::after_millis(750).await;
-            if ow.reset() {
+            reset2 = ow.reset();
+            if reset2 {
                 ow.write_byte(codec::DS18_CMD_SKIP_ROM);
                 ow.write_byte(codec::DS18_CMD_READ_SCRATCH);
                 // Канон ds18x20 datasheet: TL TH CONF SCRATCH RA R1 R2 CRC8 [EXTCRC]
-                let mut sp = [0u8; 9];
-                for b in sp.iter_mut() {
+                let mut buf = [0u8; 9];
+                for b in buf.iter_mut() {
                     *b = ow.read_byte();
                 }
                 ow.release();
-                temp_mc = codec::ds18x20_scratchpad(&sp[..8].try_into().unwrap());
+                sp = Some(buf);
+                temp_mc = codec::ds18x20_scratchpad(&buf[..8].try_into().unwrap());
             }
         }
         match temp_mc {
             Some(mc) => log::info!("ds18x20: {}.{} C", mc / 1000, (mc % 1000).abs()),
-            None => log::warn!("ds18x20: нет чтения (датчик не отвечает на GPIO4?)"),
+            None => log::warn!(
+                "ds18x20: нет чтения (presence={}, reset2={}, sp={:02X?})",
+                present,
+                reset2,
+                sp.unwrap_or([0u8; 9])
+            ),
         }
         SENSORS.lock().await.temp_mc = temp_mc;
     }
