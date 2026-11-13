@@ -189,8 +189,8 @@ async fn sntp_exchange(
             server = Some(IpAddress::Ipv4(v4));
             break;
         }
-        match dns.query(name, DnsQueryType::A).await {
-            Ok(addrs) => {
+        match with_timeout(Duration::from_secs(5), async move { dns.query(name, DnsQueryType::A).await }).await {
+            Ok(Ok(addrs)) => {
                 // DnsQueryType::A возвращает только A-записи; embassy-net/ipv4
                 // IpAddress в этой сборке имеет единственный вариант Ipv4.
                 if let Some(ip) = addrs.first() {
@@ -198,10 +198,12 @@ async fn sntp_exchange(
                     break;
                 }
             }
-            Err(e) => log::debug!("dns {name}: {e:?}"),
+            Ok(Err(e)) => log::info!("dns {name}: {e:?}"),
+            Err(_) => log::info!("dns {name}: timeout"),
         }
     }
     let server = server.unwrap_or(FALLBACK_IP);
+    log::info!("SNTP exchange → {server:?}");
 
     sock.send_to(&time::sntp_request(), (server, 123u16))
         .await
@@ -240,11 +242,25 @@ pub async fn sntp_task(stack: Stack<'static>) {
         return;
     }
     let dns = DnsSocket::new(stack);
+    let mut iter: u32 = 0;
     loop {
+        iter += 1;
         stack.wait_config_up().await;
-        let reference = now_secs().await;
-        // Кастомный сервер из NVS (если сохранён) — первым, затем пулы по умолчанию.
+        // now_secs/load_ntp под таймаутом: зависший I2C или flash-мьютекс не
+        // должны молча вешать задачу (цикл SNTP обязан продолжать попытки).
+        let reference = match with_timeout(Duration::from_secs(10), now_secs()).await {
+            Err(_) => {
+                log::warn!("SNTP iter {iter}: clock stage stalled >10s; retry in 60s");
+                Timer::after_secs(SNTP_RETRY_SECS).await;
+                continue;
+            }
+            Ok(r) => r,
+        };
+        // load_ntp синхронный (flash-оoperation под critical section) — его
+        // нельзя обернуть в with_timeout; зависнуть в нём может только через
+        // flash-мьютекс, а тот однократный и неблокирующий по конструкции.
         let custom = crate::settings::load_ntp();
+        log::info!("SNTP iter {iter}: clock ok, custom={custom:?}");
         let mut names: heapless::Vec<&str, 3> = heapless::Vec::new();
         if let Some(c) = &custom {
             let _ = names.push(c.as_str());
