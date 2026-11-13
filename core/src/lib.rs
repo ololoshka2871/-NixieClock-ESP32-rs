@@ -53,6 +53,7 @@ impl Watchdog {
 
 pub mod icmp;
 pub mod page;
+pub mod sensors;
 pub mod settings;
 pub mod time;
 
