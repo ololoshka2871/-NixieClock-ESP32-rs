@@ -175,7 +175,10 @@ async fn handle<'a>(
             body.clear();
             let mut ipbuf: heapless::String<45> = heapless::String::new();
             let mut gwbuf: heapless::String<16> = heapless::String::new();
-            if let Some(cfg) = stack.config_v4() {
+            let mut dnsbuf: heapless::String<45> = heapless::String::new();
+            let cfg_opt = stack.config_v4();
+            let dhcp_done = cfg_opt.is_some();
+            if let Some(cfg) = cfg_opt {
                 // StaticConfigV4.address — StackedIpAddr; Display печатает "a.b.c.d/prefix"
                 let _ = write!(ipbuf, "{}", cfg.address);
                 if let Some((ip, _)) = ipbuf.split_once('/') {
@@ -183,6 +186,9 @@ async fn handle<'a>(
                 }
                 if let Some(gw) = cfg.gateway {
                     let _ = write!(gwbuf, "{}", gw);
+                }
+                if let Some(d) = cfg.dns_servers.first() {
+                    let _ = write!(dnsbuf, "{}", d);
                 }
             }
             let ntp_saved = crate::settings::load_ntp();
@@ -206,6 +212,8 @@ async fn handle<'a>(
                 time_synced: synced,
                 ntp_server: ntp_saved.as_ref().map(|s| s.as_str()),
                 gateway: if gwbuf.is_empty() { None } else { Some(gwbuf.as_str()) },
+                dhcp_done,
+                dns: if dnsbuf.is_empty() { None } else { Some(dnsbuf.as_str()) },
             };
             let _ = write!(body, "{}", snap);
             respond(socket, "200 OK", "application/json", body.as_str()).await;

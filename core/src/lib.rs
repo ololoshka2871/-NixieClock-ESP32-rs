@@ -79,8 +79,13 @@ pub struct StatusSnapshot<'a> {
     pub time_synced: bool,
     /// Сохранённый пользователем NTP-сервер (None — встроенные пулы).
     pub ntp_server: Option<&'a str>,
-    /// Default gateway из DHCP (None — стек ещё не поднялся).
+    /// Default gateway из DHCP. None без учёта dhcp_done двусмысленно:
+    /// либо DHCP ещё не завершился, либо роутер не присылает option 3.
     pub gateway: Option<&'a str>,
+    /// DHCP-гандшейк завершён (стек имеет конфигурацию).
+    pub dhcp_done: bool,
+    /// Первый DNS-сервер из DHCP (тот же смысл None, что у gateway).
+    pub dns: Option<&'a str>,
 }
 
 impl StatusSnapshot<'_> {
@@ -126,6 +131,11 @@ impl StatusSnapshot<'_> {
         match self.gateway {
             Some(g) => write!(out, ",\"gateway\":\"{}\"", g)?,
             None => out.write_str(",\"gateway\":null")?,
+        }
+        write!(out, ",\"dhcp_done\":{}", self.dhcp_done)?;
+        match self.dns {
+            Some(d) => write!(out, ",\"dns\":\"{}\"", d)?,
+            None => out.write_str(",\"dns\":null")?,
         }
         out.write_str("}")
     }
@@ -213,11 +223,13 @@ mod tests {
             time_synced: true,
             ntp_server: Some("192.168.0.28"),
             gateway: Some("192.168.0.1"),
+            dhcp_done: true,
+            dns: Some("192.168.0.1"),
         };
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\"}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\"}"
         );
         let s2 = StatusSnapshot { ip: None, time: None, ota_state: "New", pending: true, ..s };
         let json2 = alloc::format!("{}", s2);

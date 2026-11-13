@@ -8,7 +8,8 @@ async function poll() {
         $("uptime").textContent = fmtU(s.uptime);
         $("fw").textContent = s.fw + " v" + s.version;
         $("ip").textContent = s.ip || "нет IP (wifi не подключён)";
-        $("gw").textContent = s.gateway || "нет (DHCP-стек не поднят)";
+        $("gw").textContent = s.gateway || (s.dhcp_done ? "нет (роутер не передаёт шлюз)" : "нет (DHCP не завершён)");
+        $("dns").textContent = s.dns || (s.dhcp_done ? "нет (роутер не передаёт DNS)" : "нет (DHCP не завершён)");
         $("wifi_cur").textContent = s.wifi_ssid || "—";
         $("wifi_src").textContent = s.wifi_saved ? "из NVS (сохранены)" : "из прошивки (env)";
         const el = $("ota_state"); el.textContent = s.ota_state + (s.pending ? " (ждет подтверждения)" : "");
