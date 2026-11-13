@@ -143,12 +143,17 @@ async fn handle<'a>(
                 read_post_body(socket, reqbuf, &mut raw, len).await;
                 handle_time_set(socket, raw.as_slice()).await;
             }
+            "/api/ntp" => {
+                let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+                read_post_body(socket, reqbuf, &mut raw, len).await;
+                handle_ntp_set(socket, raw.as_slice()).await;
+            }
             _ => {
                 respond(
                     socket,
                     "405 Method Not Allowed",
                     "text/plain",
-                    "POST is accepted on /api/wifi/connect and /api/time\n",
+                    "POST is accepted on /api/wifi/connect, /api/time and /api/ntp\n",
                 )
                 .await;
             }
@@ -169,13 +174,18 @@ async fn handle<'a>(
         "/api/status" => {
             body.clear();
             let mut ipbuf: heapless::String<45> = heapless::String::new();
+            let mut gwbuf: heapless::String<16> = heapless::String::new();
             if let Some(cfg) = stack.config_v4() {
                 // StaticConfigV4.address — StackedIpAddr; Display печатает "a.b.c.d/prefix"
                 let _ = write!(ipbuf, "{}", cfg.address);
                 if let Some((ip, _)) = ipbuf.split_once('/') {
                     ipbuf.truncate(ip.len());
                 }
+                if let Some(gw) = cfg.gateway {
+                    let _ = write!(gwbuf, "{}", gw);
+                }
             }
+            let ntp_saved = crate::settings::load_ntp();
             let aw = crate::settings::active_wifi();
             let (epoch, civil, tsource, synced) = crate::clock::snapshot().await;
             let snap = clock_core::StatusSnapshot {
@@ -194,6 +204,8 @@ async fn handle<'a>(
                 time: Some(civil.as_str()),
                 time_source: tsource.as_str(),
                 time_synced: synced,
+                ntp_server: ntp_saved.as_ref().map(|s| s.as_str()),
+                gateway: if gwbuf.is_empty() { None } else { Some(gwbuf.as_str()) },
             };
             let _ = write!(body, "{}", snap);
             respond(socket, "200 OK", "application/json", body.as_str()).await;
@@ -369,6 +381,68 @@ async fn handle_wifi_connect<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
             }
         },
     }
+}
+
+/// POST /api/ntp: {"server":"host"} — сохранить кастомный NTP-сервер
+/// (пустая строка — сброс на встроенные пулы). Никакого ребута: sntp_task
+/// перечитывает NVS на каждой итерации и сменит сервер на следующем
+/// цикле (≤ SNTP_RETRY_SECS).
+async fn handle_ntp_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
+    let text = core::str::from_utf8(raw).unwrap_or("");
+    let server = match clock_core::settings::parse_ntp_json(text) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("ntp: rejected: {}", e);
+            let mut resp: String<256> = String::new();
+            let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+            respond(socket, "400 Bad Request", "application/json", resp.as_str()).await;
+            return;
+        }
+    };
+    let saved: String<80> = if server.is_empty() {
+        match crate::settings::save_ntp(None) {
+            Err(e) => {
+                log::error!("ntp: NVS save failed: {}", e);
+                let mut resp: String<256> = String::new();
+                let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+                respond(socket, "500 Internal Server Error", "application/json", resp.as_str()).await;
+                return;
+            }
+            Ok(()) => {
+                let mut s: String<80> = String::new();
+                let _ = s.push_str("default pools");
+                s
+            }
+        }
+    } else {
+        match clock_core::settings::validate_ntp(&server) {
+            Err(e) => {
+                log::warn!("ntp: rejected: {}", e);
+                let mut resp: String<256> = String::new();
+                let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+                respond(socket, "400 Bad Request", "application/json", resp.as_str()).await;
+                return;
+            }
+            Ok(v) => match crate::settings::save_ntp(Some(v.as_str())) {
+                Err(e) => {
+                    log::error!("ntp: NVS save failed: {}", e);
+                    let mut resp: String<256> = String::new();
+                    let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+                    respond(socket, "500 Internal Server Error", "application/json", resp.as_str()).await;
+                    return;
+                }
+                Ok(()) => {
+                    let mut s: String<80> = String::new();
+                    let _ = s.push_str(v.as_str());
+                    s
+                }
+            },
+        }
+    };
+    log::info!("ntp: server set to {}", saved);
+    let mut resp: String<256> = String::new();
+    let _ = write!(resp, "{{\"status\":\"saved\",\"server\":\"{}\"}}", saved);
+    respond(socket, "200 OK", "application/json", resp.as_str()).await;
 }
 
 async fn respond_gz<'a>(socket: &mut TcpSocket<'a>, content_type: &str, gz: &[u8]) {

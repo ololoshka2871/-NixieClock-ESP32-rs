@@ -178,11 +178,17 @@ async fn sntp_exchange(
     read_buf: &mut [u8],
     dns: &DnsSocket<'_>,
     ref_epoch: u64,
+    names: &[&str],
 ) -> Result<u64, &'static str> {
-    // Имена NTP-пулов: основной и резервный (IP-запаска на случай мёртвой DNS).
+    // Имена из настроек (кастомный первым). IP-литерал используем сразу, без DNS;
+    // IP-запаска time.google.com — только если кастомного сервера нет.
     const FALLBACK_IP: IpAddress = IpAddress::Ipv4(embassy_net::Ipv4Address::new(216, 239, 35, 8)); // time.google.com
     let mut server: Option<IpAddress> = None;
-    for name in ["pool.ntp.org", "time.google.com"] {
+    for name in names {
+        if let Ok(v4) = name.parse::<embassy_net::Ipv4Address>() {
+            server = Some(IpAddress::Ipv4(v4));
+            break;
+        }
         match dns.query(name, DnsQueryType::A).await {
             Ok(addrs) => {
                 // DnsQueryType::A возвращает только A-записи; embassy-net/ipv4
@@ -237,7 +243,15 @@ pub async fn sntp_task(stack: Stack<'static>) {
     loop {
         stack.wait_config_up().await;
         let reference = now_secs().await;
-        match sntp_exchange(sock, read_buf, &dns, reference).await {
+        // Кастомный сервер из NVS (если сохранён) — первым, затем пулы по умолчанию.
+        let custom = crate::settings::load_ntp();
+        let mut names: heapless::Vec<&str, 3> = heapless::Vec::new();
+        if let Some(c) = &custom {
+            let _ = names.push(c.as_str());
+        }
+        let _ = names.push("pool.ntp.org");
+        let _ = names.push("time.google.com");
+        match sntp_exchange(sock, read_buf, &dns, reference, &names).await {
             Ok(epoch) => {
                 let drift = epoch as i64 - reference as i64;
                 sync(epoch, TimeSource::Ntp).await;

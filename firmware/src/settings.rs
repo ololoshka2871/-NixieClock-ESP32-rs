@@ -22,6 +22,7 @@ const NS: Key = const { Key::from_str("settings") };
 const K_SCHEMA: Key = const { Key::from_str("schema_ver") };
 const K_SSID: Key = const { Key::from_str("ssid") };
 const K_PASS: Key = const { Key::from_str("pass") };
+const K_NTP: Key = const { Key::from_str("ntp_server") };
 
 /// Открыть NVS поверх общей flash: найти раздел nvs в таблице разделов,
 /// открыть, выполнить замыкание, закрыть (flash при этом освобождается).
@@ -106,6 +107,39 @@ pub fn save_wifi(creds: &WifiCredentials) -> Result<(), &'static str> {
             "NVS: сохранены Wi-Fi креды (ssid={}, schema={})",
             creds.ssid,
             SCHEMA_VER
+        );
+        Ok(())
+    })
+    .ok_or("nvs: раздел недоступен")?
+}
+
+/// Прочитать NTP-сервер; None — не сохранён/пустой (значит встроенные пулы).
+pub fn load_ntp() -> Option<String<64>> {
+    with_nvs(|nvs| {
+        let raw = nvs.get::<alloc::string::String>(&NS, &K_NTP).ok()?;
+        if raw.is_empty() {
+            return None;
+        }
+        match clock_core::settings::validate_ntp(raw.as_str()) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::warn!("NVS: ключ ntp_server невалиден ({}) — игнорируем", e);
+                None
+            }
+        }
+    })
+    .flatten()
+}
+
+/// Сохранить/сбросить NTP-сервер (Some("") или None = сброс на пулы по умолчанию).
+pub fn save_ntp(server: Option<&str>) -> Result<(), &'static str> {
+    let value = server.unwrap_or("");
+    with_nvs(|nvs| {
+        nvs.set(&NS, &K_NTP, value)
+            .map_err(|_| "nvs: запись ntp_server")?;
+        log::info!(
+            "NVS: NTP-сервер {}",
+            if value.is_empty() { "сброшен на пулы по умолчанию" } else { value }
         );
         Ok(())
     })

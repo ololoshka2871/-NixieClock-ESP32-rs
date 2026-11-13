@@ -75,9 +75,61 @@ pub fn parse_wifi_json(body: &str) -> Result<WifiCredentials, &'static str> {
     WifiCredentials::new(&ssid, &password)
 }
 
+/// NTP-сервер пользователя: имя хоста или IPv4. Пусто/отсутствие ключа —
+/// встроенные пулы (pool.ntp.org, time.google.com).
+pub const NTP_MAX: usize = 63;
+
+pub fn validate_ntp(s: &str) -> Result<HString<64>, &'static str> {
+    if s.is_empty() || s.len() > NTP_MAX {
+        return Err("ntp: длина 1..63");
+    }
+    if s
+        .bytes()
+        .any(|c| !(c.is_ascii_alphanumeric() || c == b'.' || c == b'-'))
+    {
+        return Err("ntp: только латиница, цифры, точки и дефис");
+    }
+    if s.starts_with(['.', '-']) || s.ends_with(['.', '-']) {
+        return Err("ntp: не начинается/кончается точкой или дефисом");
+    }
+    if s.contains("..") {
+        return Err("ntp: пустая метка в имени");
+    }
+    let mut h: HString<64> = HString::new();
+    h.push_str(s).map_err(|_| "ntp: слишком длинный")?;
+    Ok(h)
+}
+
+/// Разобрать тело `{"server":"..."}` (пустая строка = сброс на пулы по умолчанию).
+pub fn parse_ntp_json(body: &str) -> Result<String, &'static str> {
+    json_str_value(body, "server").ok_or("нет поля server")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_ntp_servers() {
+        assert_eq!(validate_ntp("192.168.0.28").unwrap().as_str(), "192.168.0.28");
+        assert_eq!(validate_ntp("pool.ntp.org").unwrap().as_str(), "pool.ntp.org");
+        assert_eq!(validate_ntp("time.google.com").unwrap().as_str(), "time.google.com");
+        assert_eq!(validate_ntp("NTP-1.lan").unwrap().as_str(), "NTP-1.lan");
+        assert_eq!(parse_ntp_json(r#"{"server":"192.168.0.28"}"#).unwrap(), "192.168.0.28");
+    }
+
+    #[test]
+    fn rejects_bad_ntp_servers() {
+        assert!(validate_ntp("").is_err());
+        assert!(validate_ntp(&"a".repeat(64)).is_err());
+        assert!(validate_ntp(&("a".repeat(63) + ".ru")).is_err()); // 66 > 63
+        assert!(validate_ntp("ntp server").is_err()); // пробел
+        assert!(validate_ntp("http://time").is_err()); // схема/двоеточие/слэш
+        assert!(validate_ntp(".ntp.org").is_err());
+        assert!(validate_ntp("ntp..org").is_err());
+        assert!(validate_ntp("время.рф").is_err()); // не ASCII
+        assert!(parse_ntp_json(r#"{"ssid":"x"}"#).is_err());
+    }
 
     #[test]
     fn valid_credentials_ok() {

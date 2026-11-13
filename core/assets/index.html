@@ -17,6 +17,7 @@
             <b>uptime</b><span id="uptime">—</span>
             <b>firmware</b><span id="fw">—</span>
             <b>IP</b><span id="ip">—</span>
+            <b>шлюз (DHCP)</b><span id="gw">—</span>
             <b>OTA-состояние</b><span id="ota_state">—</span>
             <b>лог-коллектор</b><span id="log_url" class="note">—</span>
         </div>
@@ -39,11 +40,15 @@
         <div class="kv">
             <b>сейчас (UTC)</b><span id="time_now" class="big">—</span>
             <b>источник</b><span id="time_src">—</span>
+            <b>NTP-сервер</b><span id="ntp_cur">—</span>
         </div>
+        <div class="row"><input type="text" id="ntp_in" placeholder="NTP-сервер: IP или имя (напр. 192.168.0.28)"
+                maxlength="63"><button id="ntp_btn">Сохранить NTP</button></div>
+        <div id="ntp_msg" class="note"></div>
         <div class="row"><input type="datetime-local" id="time_set_in" step="1"><button id="time_btn">Установить
                 вручную</button></div>
         <div id="time_msg" class="note">DS1307 (I2C0) + SNTP каждые 24 ч. Ручная установка — UTC-время, когда нет сети;
-            после установки пишется в DS1307.</div>
+            после установки пишется в DS1307. Пустой NTP-сервер = встроенные пулы (pool.ntp.org, time.google.com).</div>
     </div>
 
     <h2>Дисплей</h2>
