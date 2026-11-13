@@ -26,7 +26,7 @@ use esp_backtrace as _;
 use esp_bootloader_esp_idf::{
     ota::OtaImageState,
     partitions::{
-        AppPartitionSubType, PartitionType, PARTITION_TABLE_MAX_LEN, read_partition_table,
+        AppPartitionSubType, PartitionType, read_partition_table,
     },
 };
 use esp_hal::{
@@ -133,10 +133,7 @@ async fn main(spawner: Spawner) -> ! {
     // и первый OTA может перетереть уже загруженный слот. Запоминаем
     // реально загруженный слот (по MMU entry 0) — ниже инициализируем otadata им.
     let booted_app = flashcell::with_flash(|flash| {
-        let ptbuf = &mut *mkstatic!(
-            [u8; PARTITION_TABLE_MAX_LEN],
-            [0u8; PARTITION_TABLE_MAX_LEN]
-        );
+        let ptbuf = unsafe { flashcell::ptbuf() };
         match read_partition_table(flash, ptbuf) {
             Ok(pt) => match pt.booted_partition() {
                 Ok(Some(p)) => match p.partition_type() {

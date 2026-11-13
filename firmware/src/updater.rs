@@ -23,7 +23,6 @@ use crate::{OTA_BUSY, OTA_REQ, OtaRequest};
 use esp_bootloader_esp_idf::{
     ota::OtaImageState,
     ota_updater::OtaUpdater,
-    partitions::PARTITION_TABLE_MAX_LEN,
 };
 use esp_hal::system::software_reset;
 
@@ -100,10 +99,7 @@ pub fn with_updater<R>(
     ) -> core::result::Result<R, esp_bootloader_esp_idf::partitions::Error>,
 ) -> Result<R, OtaErr> {
     crate::flashcell::with_flash(|flash| {
-        let ptbuf = &mut *mkstatic!(
-            [u8; PARTITION_TABLE_MAX_LEN],
-            [0u8; PARTITION_TABLE_MAX_LEN]
-        );
+        let ptbuf = unsafe { crate::flashcell::ptbuf() };
         match OtaUpdater::new(flash, ptbuf) {
             Ok(mut u) => f(&mut u).map_err(|e| errf(format_args!("updater: {:?}", e))),
             Err(e) => Err(errf(format_args!("updater init: {:?}", e))),

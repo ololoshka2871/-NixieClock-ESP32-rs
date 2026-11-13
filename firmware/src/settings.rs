@@ -10,7 +10,7 @@ use embassy_sync::blocking_mutex::{
     Mutex,
 };
 use esp_bootloader_esp_idf::partitions::{
-    DataPartitionSubType, PARTITION_TABLE_MAX_LEN, PartitionType, read_partition_table,
+    DataPartitionSubType, PartitionType, read_partition_table,
 };
 use esp_nvs::Key;
 use esp_nvs::Nvs;
@@ -27,10 +27,7 @@ const K_PASS: Key = const { Key::from_str("pass") };
 /// открыть, выполнить замыкание, закрыть (flash при этом освобождается).
 fn with_nvs<R>(f: impl FnOnce(&mut Nvs<SharedFlash>) -> R) -> Option<R> {
     let loc = crate::flashcell::with_flash(|flash| {
-        let ptbuf = &mut *mkstatic!(
-            [u8; PARTITION_TABLE_MAX_LEN],
-            [0u8; PARTITION_TABLE_MAX_LEN]
-        );
+        let ptbuf = unsafe { crate::flashcell::ptbuf() };
         match read_partition_table(flash, ptbuf) {
             Ok(table) => table
                 .find_partition(PartitionType::Data(DataPartitionSubType::Nvs))
