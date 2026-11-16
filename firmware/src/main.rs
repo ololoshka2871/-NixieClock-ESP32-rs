@@ -63,6 +63,7 @@ mod clock;
 mod crashlog;
 mod display;
 mod flashcell;
+mod hangdetect;
 mod icmp;
 mod logger;
 mod sensors;
@@ -117,6 +118,10 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
+    // Независимый детектор зависаний на TIMG1 (см. hangdetect.rs).
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
+    hangdetect::setup(timg1.timer1);
+
     logger::init();
     log::info!(
         "=== {} v{} starting (template app over esp32-wifi-bootloader) ===",
@@ -141,6 +146,8 @@ async fn main(spawner: Spawner) -> ! {
     flashcell::init(FlashStorage::new(peripherals.FLASH));
     // Причина смерти прошлого бута (если это была паника) — в логи.
     crashlog::dump_previous_panic();
+    // Снимок прошлой зависимости от independent-ISR (если был).
+    hangdetect::report_prev();
 
     // После UART-прошивки otadata стёрта: crate считает «текущий» слот Factory,
     // и первый OTA может перетереть уже загруженный слот. Запоминаем

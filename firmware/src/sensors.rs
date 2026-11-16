@@ -155,6 +155,7 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
     // не подключён ли, или битые провода. Цикл 10 с: удобно ловить осциллографом.
     let mut last_presence: Option<bool> = None;
     loop {
+        hangdetect::beat(&hangdetect::DS18);
         Timer::after_secs(10).await;
         let mut temp_mc: Option<i32> = None;
         let mut sp: Option<[u8; 9]> = None;
@@ -209,6 +210,7 @@ pub async fn mhz19_task(mut uart: Uart<'static, Async>) {
     // Датчику нужно несколько секунд на прогрев лампы после подачи питания.
     Timer::after_secs(20).await;
     loop {
+        hangdetect::beat(&hangdetect::MHZ);
         let cmd = codec::mhz19_command(codec::MHZ19_CMD_READ_PPM, [0, 0, 0, 0]);
         match uart.write_all(&cmd).await {
             Ok(()) => match with_timeout(Duration::from_secs(3), uart.read_exact(&mut buf)).await {
@@ -246,6 +248,7 @@ pub async fn adc_task(
     mut p12: CalPin<GPIO34<'static>>,
 ) {
     loop {
+        hangdetect::beat(&hangdetect::CYCLE); // adc жив = исполнитель жив (дублирует app_task)
         Timer::after_secs(30).await;
         // SAR-конверсии строго по очереди (чужая конверсия = WouldBlock).
         let r33 = block!(adc.read_oneshot(&mut p33)).ok();

@@ -83,6 +83,7 @@ async fn send_chunk(
     }
     match p.send(b) {
         Ok(mut xfer) => {
+            hangdetect::beat(&hangdetect::FRAME);
             let mut done = match xfer.wait_for_done().await {
                 Ok(()) => true,
                 Err(e) => {

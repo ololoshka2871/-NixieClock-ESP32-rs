@@ -28,6 +28,7 @@ pub async fn app_task() {
         Timer::after(Duration::from_secs(2)).await;
         cycle += 1;
         APP_WD.lock().await.feed(now_ms());
+        hangdetect::beat(&hangdetect::CYCLE);
         if cycle % 5 == 0 {
             let led = clock_core::blink_pattern(cycle / 5, &[true, false, false, false]);
             log::info!(
