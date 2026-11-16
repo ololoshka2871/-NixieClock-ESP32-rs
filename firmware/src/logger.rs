@@ -4,7 +4,7 @@
 
 use core::cell::RefCell;
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering}; // +DROPPED ниже
 
 use embassy_net::{
     dns::DnsSocket,
@@ -33,6 +33,8 @@ static RING: Mutex<
     RefCell<Deque<(u32, String<MAX_LINE>), RING_MAX>>,
 > = Mutex::new(RefCell::new(Deque::new()));
 static SENDING: AtomicBool = AtomicBool::new(false);
+/// Сколько записей потеряно переполнением ring, пока коллектор недоступен.
+static DROPPED: AtomicU32 = AtomicU32::new(0);
 
 struct WifiLogger;
 
@@ -61,6 +63,7 @@ impl log::Log for WifiLogger {
             let ring = &mut *cell.borrow_mut();
             if ring.is_full() {
                 ring.pop_front();
+                DROPPED.fetch_add(1, Ordering::Relaxed);
             }
             let _ = ring.push_back((seq, line));
         });
@@ -110,6 +113,9 @@ pub async fn logfwd_task(stack: Stack<'static>) {
 
     let mut last_sent: u32 = 0;
     let mut batch_last: u32 = 0;
+    let mut fails: u32 = 0;
+    let mut backoff_ms:u64 = 1000;
+    let mut lost_mark: u32 = 0;
 
     loop {
         if body.is_empty() {
@@ -143,12 +149,29 @@ pub async fn logfwd_task(stack: Stack<'static>) {
             Ok(()) => {
                 last_sent = batch_last;
                 body.clear();
+                if fails > 0 {
+                    log::info!(
+                        "log link restored: attempts={}, lost={}",
+                        fails,
+                        DROPPED.load(Ordering::Relaxed) - lost_mark
+                    );
+                    fails = 0;
+                    backoff_ms = 1000;
+                }
             }
             Err(e) => {
-                // Тело не сброшено: следующий цикл повторит POST того же пакета;
-                // предупреждение попадёт в следующий пакет.
-                log::warn!("log flush failed: {}", e.as_str());
-                Timer::after_millis(3000).await;
+                // Тело не сброшено: следующий цикл повторит POST того же пакета.
+                // Экспоненциальный backoff (1..30 с) и подавление спама: мёртвый
+                // коллектор не должен кормить сам себя warn'ами и не грузить исполнитель.
+                if fails == 0 {
+                    lost_mark = DROPPED.load(Ordering::Relaxed);
+                }
+                fails += 1;
+                if fails == 1 || fails % 16 == 0 {
+                    log::warn!("log flush failed (attempt {}): {}", fails, e.as_str());
+                }
+                Timer::after_millis(backoff_ms).await;
+                backoff_ms = (backoff_ms * 2).min(30_000);
             }
         }
     }

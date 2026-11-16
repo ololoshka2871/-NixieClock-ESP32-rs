@@ -21,7 +21,7 @@
 //! slot, ~400 Hz refresh like the original); WiFi load can only lengthen the
 //! dark gap between chunks, never glitch a digit.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use embassy_executor::Spawner;
 
 use crate::hangdetect;
@@ -51,6 +51,12 @@ const BLANK_BYTES: usize = 32;
 /// /display/test, читается display_task каждый кадр. Семантика —
 /// clock_core::display::test_samples (0 = выключен).
 pub static TEST_MODE: AtomicU8 = AtomicU8::new(0);
+/// Стендовый тумблер: /display/off останавливает всю индикацию (DMA/TG молчат),
+/// полезный для бисекции крашей; /display/on возобновляет.
+pub static DISPLAY_ON: AtomicBool = AtomicBool::new(true);
+/// Стендовый тумблер: noblank=1 убирает blank-паузу (данные ламп постоянно
+/// на всех 8 линиях между слотами) — удобно смотреть осциллом.
+pub static NO_BLANK: AtomicBool = AtomicBool::new(false);
 
 /// Rebuild the peripheral pair after a wedged transfer. Only reachable when
 /// the classic-ESP32 I2S flags lied to us: the dropped transfer's Drop has
@@ -195,10 +201,20 @@ pub async fn display_task(
             last_mode = mode;
         }
 
+        if !DISPLAY_ON.load(Ordering::Relaxed) {
+            for tg in [&mut tg0, &mut tg1, &mut tg2] {
+                tg.set_level(Level::Low);
+            }
+            Timer::after_millis(200).await;
+            continue;
+        }
+
         for tg in [&mut tg0, &mut tg1, &mut tg2] {
             tg.set_level(Level::Low);
         }
-        send_chunk(&mut par, &mut buf, display_core::BLANK_BYTE, BLANK_BYTES, &mut errs).await;
+        if mode == 0 || !NO_BLANK.load(Ordering::Relaxed) {
+            send_chunk(&mut par, &mut buf, display_core::BLANK_BYTE, BLANK_BYTES, &mut errs).await;
+        }
 
         match slot {
             0 => tg0.set_level(Level::High),

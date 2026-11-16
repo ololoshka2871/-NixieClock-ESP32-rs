@@ -270,13 +270,23 @@ async fn handle<'a>(
                         }
                     }
                     Some(("rawcycle", _)) => mode = clock_core::display::TEST_RAW_CYCLE,
+                    Some(("noblank", v)) => crate::display::NO_BLANK
+                        .store(v.parse::<u8>().unwrap_or(0) != 0, core::sync::atomic::Ordering::Relaxed),
                     _ => {}
                 }
             }
             crate::display::TEST_MODE.store(mode, core::sync::atomic::Ordering::Relaxed);
+            if mode != 0 {
+                crate::display::DISPLAY_ON.store(true, core::sync::atomic::Ordering::Relaxed);
+            }
             let mut msg: heapless::String<64> = String::new();
             let _ = write!(msg, "display test mode = {}\n", mode);
             respond(socket, "200 OK", "text/plain", msg.as_str()).await;
+        }
+        "/display/off" | "/display/on" => {
+            let on = path == "/display/on";
+            crate::display::DISPLAY_ON.store(on, core::sync::atomic::Ordering::Relaxed);
+            respond(socket, "200 OK", "text/plain", if on { "display on\n" } else { "display off\n" }).await;
         }
         "/logs" | "/api/logs" => {
             logger::dump_into(body);
