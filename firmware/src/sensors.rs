@@ -16,6 +16,8 @@
 //! Кодеки протоколов и пересчёты — в clock_core::sensors (хост-тесты).
 
 use embassy_executor::task;
+
+use crate::hangdetect;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer, with_timeout};

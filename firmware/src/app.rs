@@ -2,6 +2,8 @@
 //! Замените демо на свою логику, переиспользуемое выносите в крейт clock-core.
 
 use clock_core::Watchdog;
+
+use crate::hangdetect;
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     mutex::Mutex,

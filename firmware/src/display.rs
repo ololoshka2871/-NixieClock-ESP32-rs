@@ -20,6 +20,8 @@
 //! dark gap between chunks, never glitch a digit.
 
 use embassy_executor::Spawner;
+
+use crate::hangdetect;
 use embassy_time::{Instant, Timer};
 use esp_hal::i2s::parallel::{I2sParallel, TxEightBits};
 use esp_hal::time::Rate;

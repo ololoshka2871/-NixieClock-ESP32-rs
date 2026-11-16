@@ -13,7 +13,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use esp_hal::interrupt::{InterruptHandler, Priority};
-use esp_hal::mode::Blocking;
 use esp_hal::timer::PeriodicTimer;
 use esp_hal::time::Rate;
 use static_cell::ConstStaticCell;
@@ -48,10 +47,11 @@ static STALL: [AtomicU32; 4] = [
     const { AtomicU32::new(0) },
 ];
 
-static PT_CELL: ConstStaticCell<Option<PeriodicTimer<'static, Blocking>>> =
+static PT_CELL: ConstStaticCell<Option<PeriodicTimer<'static, esp_hal::Blocking>>> =
     ConstStaticCell::new(None);
 
-unsafe extern "C" fn diag_isr() {
+extern "C" fn diag_isr() {
+    unsafe {
     let tick = ISR_TICK.fetch_add(1, Ordering::Relaxed) + 1;
     let counters = [&CYCLE, &FRAME, &MHZ, &DS18];
     for (i, c) in counters.iter().enumerate() {
@@ -80,6 +80,7 @@ unsafe extern "C" fn diag_isr() {
     if let Some(pt) = PT_CELL.take() {
         pt.clear_interrupt(); // хардварный auto_reload уже перезарядил счётчик
     }
+    }
 }
 
 pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'static>>) {
@@ -91,7 +92,7 @@ pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'
     // Тип PeriodicTimer живёт без set_interrupt_handler (unstable API) —
     // ставим через InterruptConfigurable-трейт esp-hal.
     use esp_hal::interrupt::InterruptConfigurable;
-    pt.set_interrupt_handler(InterruptHandler::new(diag_isr, Priority::Priority6));
+    pt.set_interrupt_handler(InterruptHandler::new(diag_isr, Priority::max()));
     pt.listen();
     if let Some(slot) = PT_CELL.take() {
         *slot = Some(pt);
