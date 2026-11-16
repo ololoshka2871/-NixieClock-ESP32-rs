@@ -89,15 +89,12 @@ pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'
         log::error!("hang-detect: TIMG1 старт не удался");
         return;
     };
-    // Тип PeriodicTimer живёт без set_interrupt_handler (unstable API) —
-    // ставим через InterruptConfigurable-трейт esp-hal.
-    use esp_hal::interrupt::InterruptConfigurable;
+    // Тип PeriodicTimer живёт без set_interrupt_handler (unstable API).
     pt.set_interrupt_handler(InterruptHandler::new(diag_isr, Priority::max()));
     pt.listen();
-    if let Some(slot) = PT_CELL.take() {
-        *slot = Some(pt);
-    }
-    log::info!("hang-detect armed (TIMG1, 1 s tick, prio 6, reset при stall 15 с)");
+    let slot: &'static mut Option<PeriodicTimer<'static, esp_hal::Blocking>> = PT_CELL.take();
+    *slot = Some(pt);
+    log::info!("hang-detect armed (TIMG1, 1 s tick, prio max, reset при stall 15 с)");
 }
 
 /// Вызывать в начале бута после logger::init(): снимок прошлой смерти, если ISR
