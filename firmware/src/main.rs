@@ -370,6 +370,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(server::server_task(stack).unwrap());
     spawner.spawn(logger::logfwd_task(stack).unwrap());
     spawner.spawn(updater::ota_worker_task(stack).unwrap());
+    spawner.spawn(clock::clock_ticker_task().unwrap());
     spawner.spawn(app::app_task().unwrap());
     spawner.spawn(app::watchdog_monitor_task().unwrap());
     if PENDING_BOOT.load(Ordering::SeqCst) {

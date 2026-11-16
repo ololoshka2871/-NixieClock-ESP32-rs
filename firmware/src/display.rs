@@ -172,19 +172,28 @@ pub async fn display_task(
     let mut fmax: u64 = 0;
     let mut fsum: u64 = 0;
     let mut fn_cnt: u64 = 0;
+    let mut last_epoch: u64 = u64::MAX;
+    let mut last_mode: u8 = 0xFF;
+    let mut samples = [10u8 | (10u8 << 4); 3]; // blank до первой секунды
     loop {
         let t0 = Instant::now();
-        let epoch = clock::now_secs().await;
+        // Горячий путь без await CLOCK-мьютекса: epoch из атомарного кэша
+        // (тикер refresh_cache), samples пересчитываются раз в секунду.
+        let epoch = clock::epoch_cached();
         let mode = TEST_MODE.load(Ordering::Relaxed);
-        let samples = match display_core::test_samples(mode, epoch) {
-            Some(s) => s,
-            None => {
-                let c = clock_core::time::epoch_to_civil(epoch);
-                display_core::slot_samples(&display_core::hhmmss_digits(
-                    c.hour, c.min, c.sec,
-                ))
-            }
-        };
+        if epoch != last_epoch || mode != last_mode {
+            samples = match display_core::test_samples(mode, epoch) {
+                Some(s) => s,
+                None => {
+                    let c = clock_core::time::epoch_to_civil(epoch);
+                    display_core::slot_samples(&display_core::hhmmss_digits(
+                        c.hour, c.min, c.sec,
+                    ))
+                }
+            };
+            last_epoch = epoch;
+            last_mode = mode;
+        }
 
         for tg in [&mut tg0, &mut tg1, &mut tg2] {
             tg.set_level(Level::Low);

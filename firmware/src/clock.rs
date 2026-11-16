@@ -10,7 +10,7 @@
 //! NTP-сервер не требует учётки и даёт коррекцию без внешнего приложения;
 //! ручная HTTP-установка (/api/time) оставлена как запасной путь без сети.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use alloc::string::String;
 use clock_core::time::{self, TimeSource};
@@ -44,6 +44,25 @@ pub static CLOCK: Mutex<CriticalSectionRawMutex, time::Clock> =
 /// синхронизации и снимается clock_task после записи в чип.
 pub static RTC_SAVE_PENDING: AtomicBool = AtomicBool::new(false);
 
+/// Кэш epoch модели для горячего пути (display_task): читается без мьютекса
+/// и без await, обновляется тикером clock::refresh_cache каждые 500 мс.
+/// Без этого дисплей ждал CLOCK-мьютекс каждый слот и ловил stall до
+/// сотен мс (замер v0.6.7: slot max 833 ms) — мерцание ламп.
+// Xtensa classic не имеет 64-битных атомарных — epoch храним как u32
+// (до 2106 года), читается как u64.
+pub static EPOCH_CACHE: AtomicU32 = AtomicU32::new(0);
+
+/// Обновить кэш epoch (короткий держатель CLOCK-мьютекса, без I2C).
+pub async fn refresh_cache() {
+    let e = CLOCK.lock().await.now_secs(mono_secs());
+    EPOCH_CACHE.store(e.min(u32::MAX as u64) as u32, Ordering::Relaxed);
+}
+
+/// epoch из кэша (секунды Unix; 0 пока тикер не отработал).
+pub fn epoch_cached() -> u64 {
+    EPOCH_CACHE.load(Ordering::Relaxed) as u64
+}
+
 /// Монотонные секунды от старта: embassy-time-тик (esp-hal time-driver)
 /// запускается вместе с приложением, Instant::now() == время с бутa.
 fn mono_secs() -> u64 {
@@ -74,6 +93,7 @@ pub async fn sync(epoch: u64, source: TimeSource) {
         c.set(epoch, mono_secs(), source);
     }
     RTC_SAVE_PENDING.store(true, Ordering::SeqCst);
+    EPOCH_CACHE.store(epoch.min(u32::MAX as u64) as u32, Ordering::Relaxed);
     log::info!(
         "time set from {}: {}",
         source.as_str(),
@@ -99,6 +119,16 @@ async fn ds1307_write(i2c: &mut I2c<'static, Async>, epoch: u64) -> Result<(), t
     i2c.write_async(DS1307_ADDR, &payload)
         .await
         .map_err(|_| time::TimeError::MalformedPacket)
+}
+
+/// Тикер кэша: раз в 500 мс обновляет EPOCH_CACHE, чтобы display_task
+/// никогда не ждал CLOCK-мьютекс.
+#[embassy_executor::task]
+pub async fn clock_ticker_task() {
+    loop {
+        refresh_cache().await;
+        Timer::after_millis(500).await;
+    }
 }
 
 #[embassy_executor::task]
