@@ -118,9 +118,10 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
-    // Независимый детектор зависаний на TIMG1 (см. hangdetect.rs).
-    let timg1 = TimerGroup::new(peripherals.TIMG1);
-    hangdetect::setup(timg1.timer1);
+    // Независимый детектор зависаний на TIMG0.timer1 (см. hangdetect.rs).
+    // TIMG1 на классике — вотчина WiFi-блоба (wdev/BLE timers), он ломает
+    // наш аларм при инициализации WiFi: 0.6.3 именно так и умерла.
+    hangdetect::setup(timg0.timer1);
 
     logger::init();
     log::info!(

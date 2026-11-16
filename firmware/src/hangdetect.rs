@@ -1,6 +1,7 @@
 //! Независимый детектор зависаний.
 //!
-//! Периодический ISR на TIMG1.timer1 (priority 6; таймер embassy-исполнителя
+//! Периодический ISR на TIMG0.timer1 (prio max; esp-rtos занимает только
+//! TIMG0.timer0; TIMG1 на классике зарезервирован WiFi-блобом и непригоден
 //! у esp-rtos жёстко Priority1) раз в секунду снимает счётчики живучести задач.
 //! Если app_task не циклует >=15 с — исполнитель заморожен: снимок счётчиков
 //! пишется в RTC slow memory (переживает software_reset и RWDT-сброс на
@@ -85,16 +86,15 @@ extern "C" fn diag_isr() {
 
 pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'static>>) {
     let mut pt = PeriodicTimer::new(timer);
+    pt.set_interrupt_handler(InterruptHandler::new(diag_isr, Priority::max()));
     let Ok(()) = pt.start(Rate::from_hz(1).as_duration()) else {
         log::error!("hang-detect: TIMG1 старт не удался");
         return;
     };
-    // Тип PeriodicTimer живёт без set_interrupt_handler (unstable API).
-    pt.set_interrupt_handler(InterruptHandler::new(diag_isr, Priority::max()));
     pt.listen();
     let slot: &'static mut Option<PeriodicTimer<'static, esp_hal::Blocking>> = PT_CELL.take();
     *slot = Some(pt);
-    log::info!("hang-detect armed (TIMG1, 1 s tick, prio max, reset при stall 15 с)");
+    log::info!("hang-detect armed (TIMG0.timer1, 1 s tick, prio max, reset при stall 15 с)");
 }
 
 /// Вызывать в начале бута после logger::init(): снимок прошлой смерти, если ISR
