@@ -1,6 +1,6 @@
 [package]
 name = "nixieclock-firmware"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 description = "ESP32 приложение на базе esp32-wifi-bootloader: WiFi OTA, rollback guard, WiFi-логи"
 
@@ -14,7 +14,9 @@ embassy-time = "0.5.0"
 embedded-io-async = "0.7.0"
 embedded-storage = "0.3.1"
 esp-alloc = { version = "0.11.0", features = ["esp32"] }
-esp-backtrace = { version = "0.20.0", features = ["esp32", "panic-handler", "println"] }
+# panic-handler ОТКЛЮЧЁН: наш собственный #[panic_handler] в crashlog.rs
+# (пишет причину в NVS и делает software_reset вместо зависания до RWDT).
+esp-backtrace = { version = "0.20.0", default-features = false, features = ["esp32", "println"] }
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32"] }
 esp-hal = { version = "1.2.2", features = ["esp32", "log-04", "unstable"] }
 esp-metadata-generated = { version = "0.5.3", features = ["esp32"] }

@@ -22,7 +22,6 @@ use embassy_sync::{
 };
 use embassy_time::Timer;
 use esp_alloc as _;
-use esp_backtrace as _;
 use esp_bootloader_esp_idf::{
     ota::OtaImageState,
     partitions::{
@@ -61,6 +60,7 @@ macro_rules! mkstatic {
 
 mod app;
 mod clock;
+mod crashlog;
 mod display;
 mod flashcell;
 mod icmp;
@@ -139,6 +139,8 @@ async fn main(spawner: Spawner) -> ! {
     // Единая flash-ячейка: NVS и OTA-апдейтер получают свои zero-sized ручки,
     // доступ к FlashStorage сериализуется мьютексом (см. flashcell.rs).
     flashcell::init(FlashStorage::new(peripherals.FLASH));
+    // Причина смерти прошлого бута (если это была паника) — в логи.
+    crashlog::dump_previous_panic();
 
     // После UART-прошивки otadata стёрта: crate считает «текущий» слот Factory,
     // и первый OTA может перетереть уже загруженный слот. Запоминаем

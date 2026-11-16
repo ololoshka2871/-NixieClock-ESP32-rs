@@ -32,6 +32,13 @@ pub fn with_flash<T>(f: impl FnOnce(&mut FlashStorage<'static>) -> T) -> T {
     FLASH.lock(|cell| f(cell.borrow_mut().as_mut().expect("SharedFlash::init not called")))
 }
 
+/// Как with_flash, но без expect: None если init ещё не вызван.
+/// Нужен panic-хэндлеру (crashlog): паника до/после init не должна приводить
+/// к double-panic и зависанию.
+pub fn try_with_flash<T>(f: impl FnOnce(&mut FlashStorage<'static>) -> T) -> Option<T> {
+    FLASH.lock(|cell| cell.borrow_mut().as_mut().map(|fs| f(fs)))
+}
+
 /// Общий буфер под таблицу разделов. НЕ StaticCell: with_updater/with_nvs
 /// вызываются многократно (boot-ремонты otadata, каждый OTA, каждый
 /// save/load настроек), а StaticCell::init паникует при повторной

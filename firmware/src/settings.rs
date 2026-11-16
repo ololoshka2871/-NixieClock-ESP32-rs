@@ -26,8 +26,10 @@ const K_NTP: Key = const { Key::from_str("ntp_server") };
 
 /// Открыть NVS поверх общей flash: найти раздел nvs в таблице разделов,
 /// открыть, выполнить замыкание, закрыть (flash при этом освобождается).
-fn with_nvs<R>(f: impl FnOnce(&mut Nvs<SharedFlash>) -> R) -> Option<R> {
-    let loc = crate::flashcell::with_flash(|flash| {
+/// pub(crate) + try_with_flash: вызывается и из panic-хэндлера (crashlog),
+/// где flash может быть ещё не инициализирована — без expect/panic.
+pub(crate) fn with_nvs<R>(f: impl FnOnce(&mut Nvs<SharedFlash>) -> R) -> Option<R> {
+    let loc = match crate::flashcell::try_with_flash(|flash| {
         let ptbuf = unsafe { crate::flashcell::ptbuf() };
         match read_partition_table(flash, ptbuf) {
             Ok(table) => table
@@ -35,7 +37,10 @@ fn with_nvs<R>(f: impl FnOnce(&mut Nvs<SharedFlash>) -> R) -> Option<R> {
                 .map(|entry| entry.map(|e| (e.offset(), e.len()))),
             Err(e) => Err(e),
         }
-    });
+    }) {
+        Some(r) => r,
+        None => return None, // flash ещё не инициализирована
+    };
     let (offset, size) = match loc {
         Ok(Some((o, l))) => (o as usize, l as usize),
         Ok(None) => {
