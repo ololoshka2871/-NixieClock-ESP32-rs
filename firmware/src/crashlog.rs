@@ -25,12 +25,16 @@ fn panic(info: &PanicInfo) -> ! {
     if let Some(loc) = info.location() {
         let _ = write!(&mut msg, "{}:{}: ", loc.file(), loc.line());
     }
-    let _ = msg.write_fmt(info.message().unwrap_or(core::format_args!("no message")));
+    // На esp-тулчейне PanicInfo::message() -> PanicMessage (реализует Display).
+    let _ = write!(&mut msg, "{}", info.message());
     // Для тех, кто сидит с serial-консолью.
     esp_println::println!("PANIC: {}", msg.as_str());
     // Лучшее, что можно сделать без аллокаций и логгера:
     let saved = crate::settings::with_nvs(|nvs| nvs.set(&NS, &K_PANIC, msg.as_str()));
-    esp_println::println!("crashlog: NVS save {:?}", saved.is_ok());
+    esp_println::println!(
+        "crashlog: NVS save ok={}",
+        saved.map(|r| r.is_ok()).unwrap_or(false)
+    );
     esp_hal::system::software_reset();
 }
 
