@@ -84,7 +84,7 @@ extern "C" fn diag_isr() {
 }
 
 pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'static>>) {
-    let pt = PeriodicTimer::new(timer);
+    let mut pt = PeriodicTimer::new(timer);
     let Ok(()) = pt.start(Rate::from_hz(1).as_duration()) else {
         log::error!("hang-detect: TIMG1 старт не удался");
         return;
