@@ -51,6 +51,7 @@ impl Watchdog {
     }
 }
 
+pub mod display;
 pub mod icmp;
 pub mod page;
 pub mod sensors;

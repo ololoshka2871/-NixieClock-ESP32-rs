@@ -61,6 +61,7 @@ macro_rules! mkstatic {
 
 mod app;
 mod clock;
+mod display;
 mod flashcell;
 mod icmp;
 mod logger;
@@ -325,6 +326,28 @@ async fn main(spawner: Spawner) -> ! {
     );
     spawner.spawn(
         sensors::adc_task(Adc::new(peripherals.ADC1, adc_cfg), p33, p5, p12).unwrap(),
+    );
+    // M5: индикация HHMMSS. I2S1 8-bit + DMA: шина A GPIO27/26/25/33,
+    // шина B GPIO32/5/18/19 (D2B=GPIO5 по схеме платы; GPIO12 — strap
+    // VDD_SDIO, не трогать), стробы TG0/TG1/TG2 = GPIO13/2/14 (активны
+    // HIGH), write-strobe GPIO3. Слоты переключаются в полностью
+    // погашенных окнах — призрачные цифры исключены (display.rs).
+    display::spawn(
+        &spawner,
+        peripherals.I2S1,
+        peripherals.DMA_I2S1,
+        peripherals.GPIO27,
+        peripherals.GPIO26,
+        peripherals.GPIO25,
+        peripherals.GPIO33,
+        peripherals.GPIO32,
+        peripherals.GPIO5,
+        peripherals.GPIO18,
+        peripherals.GPIO19,
+        peripherals.GPIO3,
+        peripherals.GPIO13,
+        peripherals.GPIO2,
+        peripherals.GPIO14,
     );
     spawner.spawn(clock::sntp_task(stack).unwrap());
     spawner.spawn(connection(controller).unwrap());
