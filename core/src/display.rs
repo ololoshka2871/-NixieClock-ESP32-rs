@@ -47,6 +47,45 @@ pub fn slot_samples(d: &[u8; 6]) -> [u8; 3] {
     })
 }
 
+/// Режимы тестовой индикации (диагностика M5.1, эндпоинт /display/test):
+/// 0 = выключен (показываем время); 1..=9 = фиксированная цифра d на всех
+/// шести лампах; 10 = цикл 1..9 по 1 с (привязан к настенной секунде);
+/// 16..=31 = сырой код (16+code, code 0..15) прямо на оба дешифратора —
+/// карта «код -> что реально горит» без перемарки; 32 = цикл сырых кодов
+/// 0..15 по 1 с.
+pub const TEST_CYCLE: u8 = 10;
+pub const TEST_RAW_BASE: u8 = 16;
+pub const TEST_RAW_CYCLE: u8 = 32;
+
+/// Цифра тест-цикла: секунда времени -> цифра 1..9 (1,2,..9,1,2,..).
+pub const fn test_digit_at_epoch(epoch: u64) -> u8 {
+    (epoch % 9) as u8 + 1
+}
+
+/// Байты трёх слотов в тест-режиме; None — обычный часовой режим.
+pub fn test_samples(mode: u8, epoch: u64) -> Option<[u8; 3]> {
+    match mode {
+        0 => None,
+        1..=9 => {
+            let c = digit_code(mode);
+            Some([slot_sample(c, c); 3])
+        }
+        TEST_CYCLE => {
+            let c = digit_code(test_digit_at_epoch(epoch));
+            Some([slot_sample(c, c); 3])
+        }
+        TEST_RAW_CYCLE => {
+            let c = (epoch % 16) as u8;
+            Some([slot_sample(c, c); 3])
+        }
+        m if (TEST_RAW_BASE..=(TEST_RAW_BASE + 15)).contains(&m) => {
+            let c = m - TEST_RAW_BASE;
+            Some([slot_sample(c, c); 3])
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +112,30 @@ mod tests {
         assert_eq!(s[0], 4 | (0 << 4));
         assert_eq!(s[1], 1 | (3 << 4));
         assert_eq!(s[2], 13 | (12 << 4));
+    }
+
+    #[test]
+    fn тест_фиксированная_цифра_и_цикл() {
+        assert_eq!(test_samples(0, 7), None);
+        assert_eq!(test_samples(3, 0), Some([1u8 | (1u8 << 4); 3])); // цифра 3 -> код 1
+        assert_eq!(test_samples(5, 0), Some([13u8 | (13u8 << 4); 3]));
+        assert_eq!(test_digit_at_epoch(0), 1);
+        assert_eq!(test_digit_at_epoch(8), 9);
+        assert_eq!(test_digit_at_epoch(9), 1);
+        assert_eq!(test_digit_at_epoch(10), 2);
+        assert_eq!(test_samples(TEST_CYCLE, 10), Some([4u8 | (4u8 << 4); 3])); // цифра 2 -> код 4
+    }
+
+    #[test]
+    fn тест_сырые_коды_и_их_цикл() {
+        assert_eq!(test_samples(TEST_RAW_BASE, 0), Some([0u8; 3]));
+        assert_eq!(
+            test_samples(TEST_RAW_BASE + 15, 0),
+            Some([15u8 | (15u8 << 4); 3])
+        );
+        assert_eq!(test_samples(TEST_RAW_CYCLE, 16), Some([0u8; 3]));
+        assert_eq!(test_samples(TEST_RAW_CYCLE, 17), Some([1u8 | (1u8 << 4); 3]));
+        assert_eq!(test_samples(255, 0), None);
     }
 
     #[test]

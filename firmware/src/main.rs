@@ -132,6 +132,7 @@ async fn main(spawner: Spawner) -> ! {
     // Что заставило чип перезапуститься: RWDT (зависание), brownout, panic,
     // software reset — критично для диагностики crash-loop'ов.
     log::info!("boot reason: {:?}", esp_hal::system::reset_reason());
+    log::info!("cpu clock: {}", esp_hal::clock::cpu_clock());
 
     // Watchdog включаем сразу: завис/упал -> сброс -> откат неподтверждённого образа.
     let mut rtc = Rtc::new(peripherals.RTC_TIMER);

@@ -21,6 +21,7 @@
 //! slot, ~400 Hz refresh like the original); WiFi load can only lengthen the
 //! dark gap between chunks, never glitch a digit.
 
+use core::sync::atomic::{AtomicU8, Ordering};
 use embassy_executor::Spawner;
 
 use crate::hangdetect;
@@ -45,6 +46,11 @@ const SLOT_BYTES: usize = 1056;
 /// Forced dark gap after every slot (both decoders blanked). Multiples of 4
 /// because the 8-bit DMA interleave works on 4-byte groups.
 const BLANK_BYTES: usize = 32;
+
+/// Тест-режим индикации (диагностика M5.1): ставится сервером через
+/// /display/test, читается display_task каждый кадр. Семантика —
+/// clock_core::display::test_samples (0 = выключен).
+pub static TEST_MODE: AtomicU8 = AtomicU8::new(0);
 
 /// Rebuild the peripheral pair after a wedged transfer. Only reachable when
 /// the classic-ESP32 I2S flags lied to us: the dropped transfer's Drop has
@@ -107,8 +113,8 @@ async fn send_chunk(
             // and rebuild.
             if done {
                 let mut ticks = 0u32;
-                while !xfer.is_done() && ticks < 100 {
-                    Timer::after_millis(1).await;
+                while !xfer.is_done() && ticks < 400 {
+                    Timer::after_micros(250).await;
                     ticks += 1;
                 }
                 done = xfer.is_done();
@@ -160,12 +166,25 @@ pub async fn display_task(
     let mut frame: u64 = 0;
     let mut errs: u32 = 0;
     let mut log_at = Instant::now();
+    // Статистика длительности кадра (целая итерация слота): ловим мерцание —
+    // min/avg/max по всем слотам за 60 с.
+    let mut fmin: u64 = u64::MAX;
+    let mut fmax: u64 = 0;
+    let mut fsum: u64 = 0;
+    let mut fn_cnt: u64 = 0;
     loop {
+        let t0 = Instant::now();
         let epoch = clock::now_secs().await;
-        let c = clock_core::time::epoch_to_civil(epoch);
-        let samples = display_core::slot_samples(&display_core::hhmmss_digits(
-            c.hour, c.min, c.sec,
-        ));
+        let mode = TEST_MODE.load(Ordering::Relaxed);
+        let samples = match display_core::test_samples(mode, epoch) {
+            Some(s) => s,
+            None => {
+                let c = clock_core::time::epoch_to_civil(epoch);
+                display_core::slot_samples(&display_core::hhmmss_digits(
+                    c.hour, c.min, c.sec,
+                ))
+            }
+        };
 
         for tg in [&mut tg0, &mut tg1, &mut tg2] {
             tg.set_level(Level::Low);
@@ -183,15 +202,32 @@ pub async fn display_task(
         if slot == 0 {
             frame += 1;
         }
+        let dt = t0.elapsed().as_micros();
+        if dt < fmin {
+            fmin = dt;
+        }
+        if dt > fmax {
+            fmax = dt;
+        }
+        fsum += dt;
+        fn_cnt += 1;
         if log_at.elapsed() >= embassy_time::Duration::from_secs(60) {
             log_at = Instant::now();
             log::info!(
-                "display frames {} (slot bytes {}, blank bytes {}, DMA errors: {})",
+                "display frames {} (slot bytes {}, blank bytes {}, DMA errors: {}, slot us min/avg/max: {}/{}/{}, test {})",
                 frame,
                 SLOT_BYTES,
                 BLANK_BYTES,
-                errs
+                errs,
+                fmin,
+                fsum / fn_cnt.max(1),
+                fmax,
+                mode,
             );
+            fmin = u64::MAX;
+            fmax = 0;
+            fsum = 0;
+            fn_cnt = 0;
         }
     }
 }
