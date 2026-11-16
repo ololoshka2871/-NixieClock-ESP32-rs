@@ -54,12 +54,13 @@ pub fn slot_samples(d: &[u8; 6]) -> [u8; 3] {
 /// карта «код -> что реально горит» без перемарки; 32 = цикл сырых кодов
 /// 0..15 по 1 с.
 pub const TEST_CYCLE: u8 = 10;
+pub const TEST_ZERO: u8 = 11;
 pub const TEST_RAW_BASE: u8 = 16;
 pub const TEST_RAW_CYCLE: u8 = 32;
 
-/// Цифра тест-цикла: секунда времени -> цифра 1..9 (1,2,..9,1,2,..).
+/// Цифра тест-цикла: секунда времени -> цифра 0..9 (0,1,..9,0,1,..).
 pub const fn test_digit_at_epoch(epoch: u64) -> u8 {
-    (epoch % 9) as u8 + 1
+    (epoch % 10) as u8
 }
 
 /// Байты трёх слотов в тест-режиме; None — обычный часовой режим.
@@ -68,6 +69,10 @@ pub fn test_samples(mode: u8, epoch: u64) -> Option<[u8; 3]> {
         0 => None,
         1..=9 => {
             let c = digit_code(mode);
+            Some([slot_sample(c, c); 3])
+        }
+        TEST_ZERO => {
+            let c = digit_code(0);
             Some([slot_sample(c, c); 3])
         }
         TEST_CYCLE => {
@@ -119,11 +124,12 @@ mod tests {
         assert_eq!(test_samples(0, 7), None);
         assert_eq!(test_samples(3, 0), Some([1u8 | (1u8 << 4); 3])); // цифра 3 -> код 1
         assert_eq!(test_samples(5, 0), Some([13u8 | (13u8 << 4); 3]));
-        assert_eq!(test_digit_at_epoch(0), 1);
-        assert_eq!(test_digit_at_epoch(8), 9);
-        assert_eq!(test_digit_at_epoch(9), 1);
-        assert_eq!(test_digit_at_epoch(10), 2);
-        assert_eq!(test_samples(TEST_CYCLE, 10), Some([4u8 | (4u8 << 4); 3])); // цифра 2 -> код 4
+        assert_eq!(test_digit_at_epoch(0), 0);
+        assert_eq!(test_digit_at_epoch(8), 8);
+        assert_eq!(test_digit_at_epoch(9), 9);
+        assert_eq!(test_digit_at_epoch(10), 0);
+        assert_eq!(test_samples(TEST_CYCLE, 10), Some([3u8 | (3u8 << 4); 3])); // цифра 0 -> код 3
+        assert_eq!(test_samples(TEST_ZERO, 0), Some([3u8 | (3u8 << 4); 3]));
     }
 
     #[test]

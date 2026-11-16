@@ -254,8 +254,10 @@ async fn handle<'a>(
                 match kv.split_once('=') {
                     Some(("digit", v)) => {
                         if let Ok(d) = v.parse::<u8>() {
-                            if (1..=9).contains(&d) {
-                                mode = d;
+                            match d {
+                                0 => mode = clock_core::display::TEST_ZERO,
+                                1..=9 => mode = d,
+                                _ => {}
                             }
                         }
                     }
