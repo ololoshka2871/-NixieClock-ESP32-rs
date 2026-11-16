@@ -123,6 +123,9 @@ async fn main(spawner: Spawner) -> ! {
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION")
     );
+    // Что заставило чип перезапуститься: RWDT (зависание), brownout, panic,
+    // software reset — критично для диагностики crash-loop'ов.
+    log::info!("boot reason: {:?}", esp_hal::system::reset_reason());
 
     // Watchdog включаем сразу: завис/упал -> сброс -> откат неподтверждённого образа.
     let mut rtc = Rtc::new(peripherals.RTC_TIMER);
