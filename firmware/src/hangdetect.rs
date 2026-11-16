@@ -80,7 +80,7 @@ extern "C" fn diag_isr() {
         esp_hal::system::software_reset();
     }
     unsafe {
-        if let Some(pt) = PT_OPT.as_mut() {
+        if let Some(pt) = &mut *core::ptr::addr_of_mut!(PT_OPT) {
             pt.clear_interrupt(); // хардварный auto_reload уже перезарядил счётчик
         }
     }
@@ -91,8 +91,9 @@ pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'
     let mut pt = PeriodicTimer::new(timer);
     pt.set_interrupt_handler(InterruptHandler::new(diag_isr, Priority::max()));
     // Храним таймер ДО arm: ISR не вооружён до listen(), гонки нет.
-    unsafe { PT_OPT = Some(pt); }
-    let pt = unsafe { PT_OPT.as_mut().unwrap() };
+    // Edition-2024: доступ к static mut только через addr_of_mut!.
+    unsafe { *core::ptr::addr_of_mut!(PT_OPT) = Some(pt); }
+    let pt = unsafe { &mut *core::ptr::addr_of_mut!(PT_OPT) };
     if pt.start(Rate::from_hz(1).as_duration()).is_err() {
         log::error!("hang-detect: TIMG0 старт не удался");
         return;
