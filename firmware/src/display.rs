@@ -1,8 +1,10 @@
 //! Indication M5: I2S1 parallel 8-bit + DMA, CPU only at chunk boundaries.
 //!
 //! Bus layout matches the original IDF project exactly (main/Nixie.cpp):
-//! lane order D1A..D4A,D1B..D4B = GPIO 27/26/25/33, 32/5/18/19 (D2B is
-//! GPIO5 on this board; GPIO12 is the VDD_SDIO strap and stays untouched).
+//! lane order D1A..D4A,D1B..D4B = GPIO 27/26/25/33, 32/12/18/19 (D2B is
+//! GPIO12 on this board — a physical jumper pins D2B to GPIO12, confirmed
+//! by scope 2026-11-16; the original IDF firmware drove GPIO12 too. The
+//! strap only matters at reset where the TTL decoder input is Hi-Z).
 //! Byte sample bits 0..3 = bus A code, bits 4..7 = bus B code (ic74141
 //! encoder output). TG strobes are plain outputs (active HIGH).
 //!
@@ -58,7 +60,7 @@ fn rebuild(
     // rebuild after the previous transfer's Drop has stopped the peripherals).
     let p = unsafe { esp_hal::peripherals::Peripherals::steal() };
     let pins = TxEightBits::new(
-        p.GPIO27, p.GPIO26, p.GPIO25, p.GPIO33, p.GPIO32, p.GPIO5, p.GPIO18, p.GPIO19,
+        p.GPIO27, p.GPIO26, p.GPIO25, p.GPIO33, p.GPIO32, p.GPIO12, p.GPIO18, p.GPIO19,
     );
     *par = Some(
         I2sParallel::new(p.I2S1, p.DMA_I2S1, Rate::from_hz(SAMPLE_HZ), pins, p.GPIO3).into_async(),
@@ -204,7 +206,7 @@ pub fn spawn(
     gpio25: peripherals::GPIO25<'static>,
     gpio33: peripherals::GPIO33<'static>,
     gpio32: peripherals::GPIO32<'static>,
-    gpio5: peripherals::GPIO5<'static>,
+    gpio12: peripherals::GPIO12<'static>,
     gpio18: peripherals::GPIO18<'static>,
     gpio19: peripherals::GPIO19<'static>,
     ws: peripherals::GPIO3<'static>,
@@ -212,7 +214,7 @@ pub fn spawn(
     tg2: peripherals::GPIO2<'static>,
     tg14: peripherals::GPIO14<'static>,
 ) {
-    let pins = TxEightBits::new(gpio27, gpio26, gpio25, gpio33, gpio32, gpio5, gpio18, gpio19);
+    let pins = TxEightBits::new(gpio27, gpio26, gpio25, gpio33, gpio32, gpio12, gpio18, gpio19);
     spawner
         .spawn(display_task(i2s, dma, pins, ws, tg13, tg2, tg14).unwrap());
 }

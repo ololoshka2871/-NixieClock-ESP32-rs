@@ -341,8 +341,9 @@ async fn main(spawner: Spawner) -> ! {
         sensors::adc_task(Adc::new(peripherals.ADC1, adc_cfg), p33, p5, p12).unwrap(),
     );
     // M5: индикация HHMMSS. I2S1 8-bit + DMA: шина A GPIO27/26/25/33,
-    // шина B GPIO32/5/18/19 (D2B=GPIO5 по схеме платы; GPIO12 — strap
-    // VDD_SDIO, не трогать), стробы TG0/TG1/TG2 = GPIO13/2/14 (активны
+    // шина B GPIO32/12/18/19 (D2B=GPIO12 — jumper на плате, подтверждён
+    // осциллографом 2026-11-16; оригинал так же вёл D2B на 12), стробы
+    // TG0/TG1/TG2 = GPIO13/2/14 (активны
     // HIGH), write-strobe GPIO3. Слоты переключаются в полностью
     // погашенных окнах — призрачные цифры исключены (display.rs).
     display::spawn(
@@ -354,7 +355,7 @@ async fn main(spawner: Spawner) -> ! {
         peripherals.GPIO25,
         peripherals.GPIO33,
         peripherals.GPIO32,
-        peripherals.GPIO5,
+        peripherals.GPIO12,
         peripherals.GPIO18,
         peripherals.GPIO19,
         peripherals.GPIO3,
