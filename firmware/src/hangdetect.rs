@@ -16,7 +16,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use esp_hal::interrupt::{InterruptHandler, Priority};
 use esp_hal::timer::PeriodicTimer;
 use esp_hal::time::Rate;
-use static_cell::ConstStaticCell;
 
 // Счётчики живучести: задачи дергают beat(), ISR следит изменение/застой.
 pub static CYCLE: AtomicU32 = AtomicU32::new(0); // app_task: каждые 2 с
@@ -48,8 +47,10 @@ static STALL: [AtomicU32; 4] = [
     const { AtomicU32::new(0) },
 ];
 
-static PT_CELL: ConstStaticCell<Option<PeriodicTimer<'static, esp_hal::Blocking>>> =
-    ConstStaticCell::new(None);
+// НЕ ConstStaticCell: его take() одноразовый, а ISR дёргает его каждый
+// тик -> второй take() = panic в контексте прерывания (так умерли 0.6.3/0.6.4:
+// CoreSw уже на первой секунде).
+static mut PT_OPT: Option<PeriodicTimer<'static, esp_hal::Blocking>> = None;
 
 extern "C" fn diag_isr() {
     unsafe {
@@ -78,8 +79,10 @@ extern "C" fn diag_isr() {
         core::ptr::write_volatile(m.add(7), STALL[1].load(Ordering::Relaxed));
         esp_hal::system::software_reset();
     }
-    if let Some(pt) = PT_CELL.take() {
-        pt.clear_interrupt(); // хардварный auto_reload уже перезарядил счётчик
+    unsafe {
+        if let Some(pt) = PT_OPT.as_mut() {
+            pt.clear_interrupt(); // хардварный auto_reload уже перезарядил счётчик
+        }
     }
     }
 }
@@ -87,13 +90,14 @@ extern "C" fn diag_isr() {
 pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'static>>) {
     let mut pt = PeriodicTimer::new(timer);
     pt.set_interrupt_handler(InterruptHandler::new(diag_isr, Priority::max()));
-    let Ok(()) = pt.start(Rate::from_hz(1).as_duration()) else {
-        log::error!("hang-detect: TIMG1 старт не удался");
+    // Храним таймер ДО arm: ISR не вооружён до listen(), гонки нет.
+    unsafe { PT_OPT = Some(pt); }
+    let pt = unsafe { PT_OPT.as_mut().unwrap() };
+    if pt.start(Rate::from_hz(1).as_duration()).is_err() {
+        log::error!("hang-detect: TIMG0 старт не удался");
         return;
-    };
+    }
     pt.listen();
-    let slot: &'static mut Option<PeriodicTimer<'static, esp_hal::Blocking>> = PT_CELL.take();
-    *slot = Some(pt);
     log::info!("hang-detect armed (TIMG0.timer1, 1 s tick, prio max, reset при stall 15 с)");
 }
 

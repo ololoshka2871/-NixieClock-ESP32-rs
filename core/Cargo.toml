@@ -1,6 +1,6 @@
 [package]
 name = "clock-core"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2024"
 description = "Чистая бизнес-логика приложения: без esp/embassy, тестируется на хосте"
 
