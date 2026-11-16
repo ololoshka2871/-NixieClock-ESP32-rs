@@ -93,7 +93,8 @@ pub fn setup(timer: impl esp_hal::timer::Timer + Into<esp_hal::timer::AnyTimer<'
     // Храним таймер ДО arm: ISR не вооружён до listen(), гонки нет.
     // Edition-2024: доступ к static mut только через addr_of_mut!.
     unsafe { *core::ptr::addr_of_mut!(PT_OPT) = Some(pt); }
-    let pt = unsafe { &mut *core::ptr::addr_of_mut!(PT_OPT) };
+    let pt_ref = unsafe { &mut *core::ptr::addr_of_mut!(PT_OPT) };
+    let Some(pt) = pt_ref else { return };
     if pt.start(Rate::from_hz(1).as_duration()).is_err() {
         log::error!("hang-detect: TIMG0 старт не удался");
         return;
