@@ -193,11 +193,11 @@ async fn main(spawner: Spawner) -> ! {
         Err(e) => log::error!("no OTA partitions / otadata init failed: {}", e),
     }
 
-            // Если otadata选的 слот != реально загруженный — загрузчик пытался
-            // поднять новый слот, НЕ смог его загрузить (битый образ) и откатился.
-            // Подтверждать/гардить можно только свой (загруженный) слот: иначе
-            // хороший образ пометит VALID мусорный слот, в котором загрузчик
-            // уже был.
+    // Если otadata选的 слот != реально загруженный — загрузчик пытался
+    // поднять новый слот, НЕ смог его загрузить (битый образ) и откатился.
+    // Подтверждать/гардить можно только свой (загруженный) слот: иначе
+    // хороший образ пометит VALID мусорный слот, в котором загрузчик
+    // уже был.
     let selected = updater::with_updater(|u| u.selected_partition());
     let fell_back = match (booted_app, selected) {
         (Some(bapp), Ok(sapp)) if sapp != AppPartitionSubType::Factory && sapp != bapp => {
@@ -347,6 +347,7 @@ async fn main(spawner: Spawner) -> ! {
     // TG0/TG1/TG2 = GPIO13/2/14 (активны
     // HIGH), write-strobe GPIO3. Слоты переключаются в полностью
     // погашенных окнах — призрачные цифры исключены (display.rs).
+
     display::spawn(
         &spawner,
         peripherals.I2S1,
@@ -364,6 +365,7 @@ async fn main(spawner: Spawner) -> ! {
         peripherals.GPIO2,
         peripherals.GPIO14,
     );
+
     spawner.spawn(clock::sntp_task(stack).unwrap());
     spawner.spawn(connection(controller).unwrap());
     spawner.spawn(status_task(stack).unwrap());
