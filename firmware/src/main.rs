@@ -199,13 +199,15 @@ async fn main(spawner: Spawner) -> ! {
             // хороший образ пометит VALID мусорный слот, в котором загрузчик
             // уже был.
     let selected = updater::with_updater(|u| u.selected_partition());
-    let fell_back = match (booted_app, selected) {
-        (Some(bapp), Ok(sapp)) if sapp != AppPartitionSubType::Factory && sapp != bapp => {
+    let mut booted_sub = None;
+    let fell_back = match (&booted_app, &selected) {
+        (Some(bapp), Ok(sapp)) if *sapp != AppPartitionSubType::Factory && *sapp != bapp => {
             log::warn!(
                 "otadata selects {:?} but this app boots from {:?}: bootloader rolled back",
                 sapp,
                 bapp
             );
+            booted_sub = Some(*bapp);
             true
         }
         _ => false,
