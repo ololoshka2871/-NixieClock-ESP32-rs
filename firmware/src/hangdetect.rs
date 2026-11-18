@@ -47,6 +47,10 @@ pub fn beat(c: &AtomicU32) {
 const RTC_SLOW_BASE: usize = 0x5000_0000;
 const MAGIC: u32 = 0xBAD_71E7;
 
+/// true только когда прошивка собрана с фичей display (есть I2S-кадры).
+/// Без индикации кадровый счётчик вечно стоит -> сверять его нельзя.
+const DISPLAY_ACTIVE: bool = cfg!(feature = "display");
+
 static ISR_TICK: AtomicU32 = AtomicU32::new(0);
 static PREV: [AtomicU32; 4] = [
     const { AtomicU32::new(0) },
@@ -83,14 +87,19 @@ extern "C" fn diag_isr() {
     // исполнитель упал в безлимитный спин esp-hal 1.2.2 tx_start (while tx_rempty
     // / while tx_idle) после того, как помехи от ламп залили состояние I2S/DMA.
     // Дефибриллируем I2S/DMA из ISR, чтобы спин смог выйти.
-    let f_stall = STALL[1].load(Ordering::Relaxed);
-    if f_stall >= 3 && f_stall < 15 && STALL[0].load(Ordering::Relaxed) < 15 {
-        DEFIBS.fetch_add(1, Ordering::Relaxed);
-        i2s_defib();
+    if DISPLAY_ACTIVE {
+        let f_stall = STALL[1].load(Ordering::Relaxed);
+        if f_stall >= 3 && f_stall < 15 && STALL[0].load(Ordering::Relaxed) < 15 {
+            DEFIBS.fetch_add(1, Ordering::Relaxed);
+            #[cfg(feature = "display")]
+            i2s_defib();
+        }
     }
     // 15 тиков без цикла app_task ИЛИ без кадров индикации => исполнитель/задача
     // мертвы. Реагируем раньше 30-секундного RWDT: слепок -> software_reset.
-    if STALL[0].load(Ordering::Relaxed) >= 15 || STALL[1].load(Ordering::Relaxed) >= 15 {
+    if STALL[0].load(Ordering::Relaxed) >= 15
+        || (DISPLAY_ACTIVE && STALL[1].load(Ordering::Relaxed) >= 15)
+    {
         let m = RTC_SLOW_BASE as *mut u32;
         core::ptr::write_volatile(m, MAGIC);
         core::ptr::write_volatile(m.add(1), tick);
@@ -122,6 +131,7 @@ extern "C" fn diag_isr() {
 /// сразу, тики ISR живые). Сброс out_rst/FIFO + снятие прерываний выводит
 /// периферию из залипшего состояния — спин выходит (send либо завершается,
 /// либо корректно отдаёт Err в наш обработчик).
+#[cfg(feature = "display")]
 fn i2s_defib() {
     let i2s = unsafe { esp_hal::pac::i2s1::I2S1::steal() };
     i2s.conf().modify(|_, w| w.tx_start().clear_bit());

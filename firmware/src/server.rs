@@ -244,6 +244,11 @@ async fn handle<'a>(
             let _ = write!(body, "log_url={}\n", LOG_URL);
             respond(socket, "200 OK", "text/plain; charset=utf-8", body.as_str()).await;
         }
+        #[cfg(not(feature = "display"))]
+        "/display/test" | "/display/off" | "/display/on" => {
+            respond(socket, "200 OK", "text/plain", "display disabled in this build\n").await;
+        }
+        #[cfg(feature = "display")]
         "/display/test" => {
             // Диагностика M5.1: /display/test?digit=5 | ?cycle=1 | ?code=13
             // | ?rawcycle=1 | ?off=1. digit=1..9 фиксированная цифра на всех
@@ -283,6 +288,7 @@ async fn handle<'a>(
             let _ = write!(msg, "display test mode = {}\n", mode);
             respond(socket, "200 OK", "text/plain", msg.as_str()).await;
         }
+        #[cfg(feature = "display")]
         "/display/off" | "/display/on" => {
             let on = path == "/display/on";
             crate::display::DISPLAY_ON.store(on, core::sync::atomic::Ordering::Relaxed);

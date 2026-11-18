@@ -61,6 +61,7 @@ macro_rules! mkstatic {
 mod app;
 mod clock;
 mod crashlog;
+#[cfg(feature = "display")]
 mod display;
 mod flashcell;
 mod hangdetect;
@@ -349,6 +350,7 @@ async fn main(spawner: Spawner) -> ! {
     // TG0/TG1/TG2 = GPIO13/2/14 (активны
     // HIGH), write-strobe GPIO3. Слоты переключаются в полностью
     // погашенных окнах — призрачные цифры исключены (display.rs).
+    #[cfg(feature = "display")]
     display::spawn(
         &spawner,
         peripherals.I2S1,
