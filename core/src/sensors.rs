@@ -21,7 +21,11 @@ pub const MHZ19_CMD_ABC: u8 = 0x79;
 
 /// Контрольная сумма MH-Z19: (0x100 − sum(байт[1..8])) & 0xFF для 9-байтового кадра.
 fn mhz19_checksum(frame9: &[u8; 9]) -> u8 {
-    (0x100u16 - (frame9[1..8].iter().map(|&b| b as u16).sum::<u16>() & 0xFF)).try_into().unwrap()
+    let sum = frame9[1..8].iter().map(|&b| b as u16).sum::<u16>() & 0xFF;
+    // Маска обязательна: при sum == 0 разность равна 0x100 и в u8 не влезает
+    // (раньше тут стоял try_into().unwrap() -> паника TryFromIntError на каждом
+    // 256-м ответе датчика, то есть случайный ребут после пары часов работы).
+    ((0x100u16 - sum) & 0xFF) as u8
 }
 
 /// Собрать 9-байтовую команду MH-Z19 (cmd + 4 data байта).
@@ -133,6 +137,19 @@ pub fn pin_mv_to_rail_mv(pin_mv: u16, ratio_x1000: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mhz19_checksum_wraps_at_256() {
+        // сумма байт[1..8] = 0x100 -> контрольная сумма 0x00 (раньше: паника PosOverflow)
+        // 0x01 + 0xFF + 0x00*4 + 0x00 = 0x100
+        let frame = [MHZ19_START, 0x01, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(mhz19_checksum(&frame), 0x00);
+        // сумма = 0x1FF -> 0x01
+        let frame2 = [MHZ19_START, 0x01, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(mhz19_checksum(&frame2), 0x01);
+        // обычный кадр не изменился
+        assert_eq!(mhz19_checksum(&mhz19_command(MHZ19_CMD_READ_PPM, [0, 0, 0, 0])), 0x79);
+    }
 
     #[test]
     fn mhz19_read_command_frame() {
