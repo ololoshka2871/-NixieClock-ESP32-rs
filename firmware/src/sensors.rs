@@ -162,6 +162,7 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
         let mut temp_mc: Option<i32> = None;
         let mut sp: Option<[u8; 9]> = None;
         let mut reset2 = false;
+        hangdetect::set_phase(&hangdetect::PHASE_DS18, 1); // 1-wire reset (бит-бэнг)
         let present = ow.reset();
         if last_presence != Some(present) {
             log::info!("ds18x20: presence на GPIO4 = {}", present);
@@ -172,7 +173,9 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
             ow.write_byte(codec::DS18_CMD_CONVERT);
             ow.release();
             // 12-битная конверсия — ждём асинхронно, шина высоко на pull-up.
+            hangdetect::set_phase(&hangdetect::PHASE_DS18, 2); // конверсия (750 мс)
             Timer::after_millis(750).await;
+            hangdetect::set_phase(&hangdetect::PHASE_DS18, 3); // повторный reset
             reset2 = ow.reset();
             if reset2 {
                 ow.write_byte(codec::DS18_CMD_SKIP_ROM);
