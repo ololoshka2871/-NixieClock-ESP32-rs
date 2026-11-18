@@ -15,4 +15,6 @@ for ip in $(hostname -I 2>/dev/null); do
 done
 echo "прошивка платы (пример):"
 echo "  curl \"http://192.168.0.85/api/ota?url=http://<IP>:$PORT/app_ota.bin\""
-exec python3 -m http.server "$PORT" --directory "$DIR" --bind 0.0.0.0
+# ВАЖНО: раздаём через serve_ota.py, а не http.server — он добавляет заголовок
+# X-Crc32, без него плата качает образ без проверки целостности потока.
+exec python3 "$(dirname "$0")/serve_ota.py" "$DIR" --port "$PORT"

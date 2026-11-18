@@ -1,8 +1,17 @@
 [package]
 name = "nixieclock-firmware"
-version = "0.6.10"
+version = "0.7.1"
 edition = "2024"
 description = "ESP32 приложение на базе esp32-wifi-bootloader: WiFi OTA, rollback guard, WiFi-логи"
+
+[features]
+# M5-индикация (I2S1 LCD, 8 линий + стробы). По умолчанию ВЫКЛЮЧЕНА:
+# дефибриллятор в hangdetect.rs ходит в esp_hal::pac, а с esp-hal 1.2.x
+# этот модуль pub(crate) -> ветка display сейчас не компилируется.
+# Без фичи: нет I2S-таска, /display/* отвечает "disabled",
+# hang-detect следит только за циклом приложения (не за кадрами).
+default = []
+display = []
 
 [dependencies]
 clock-core = { path = "../core" }

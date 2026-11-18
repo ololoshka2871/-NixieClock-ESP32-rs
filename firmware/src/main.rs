@@ -61,6 +61,7 @@ macro_rules! mkstatic {
 mod app;
 mod clock;
 mod crashlog;
+#[cfg(feature = "display")]
 mod display;
 mod flashcell;
 mod hangdetect;
@@ -199,13 +200,15 @@ async fn main(spawner: Spawner) -> ! {
     // хороший образ пометит VALID мусорный слот, в котором загрузчик
     // уже был.
     let selected = updater::with_updater(|u| u.selected_partition());
-    let fell_back = match (booted_app, selected) {
-        (Some(bapp), Ok(sapp)) if sapp != AppPartitionSubType::Factory && sapp != bapp => {
+    let mut booted_sub = None;
+    let fell_back = match (&booted_app, &selected) {
+        (Some(bapp), Ok(sapp)) if *sapp != AppPartitionSubType::Factory && *sapp != *bapp => {
             log::warn!(
                 "otadata selects {:?} but this app boots from {:?}: bootloader rolled back",
                 sapp,
                 bapp
             );
+            booted_sub = Some(*bapp);
             true
         }
         _ => false,
@@ -347,7 +350,7 @@ async fn main(spawner: Spawner) -> ! {
     // TG0/TG1/TG2 = GPIO13/2/14 (активны
     // HIGH), write-strobe GPIO3. Слоты переключаются в полностью
     // погашенных окнах — призрачные цифры исключены (display.rs).
-
+    #[cfg(feature = "display")]
     display::spawn(
         &spawner,
         peripherals.I2S1,

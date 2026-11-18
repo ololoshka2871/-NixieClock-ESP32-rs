@@ -21,7 +21,7 @@
 //! slot, ~400 Hz refresh like the original); WiFi load can only lengthen the
 //! dark gap between chunks, never glitch a digit.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use embassy_executor::Spawner;
 
 use crate::hangdetect;
@@ -63,10 +63,20 @@ pub static NO_BLANK: AtomicBool = AtomicBool::new(false);
 /// already stopped I2S and the DMA channel, so re-taking the (stateless ZST)
 /// peripheral handles via steal() is a clean restart of the data path. TG
 /// outputs live in the task and are never part of this rebuild.
+static REBUILDS: AtomicU32 = AtomicU32::new(0);
+
 fn rebuild(
     par: &mut Option<I2sParallel<'static, esp_hal::Async>>,
     buf: &mut Option<DmaTxBuf>,
 ) {
+    let n = REBUILDS.fetch_add(1, Ordering::Relaxed) + 1;
+    log::warn!("display: rebuilding I2S+DMA (#{n})");
+    if n >= 20 {
+        // 20 пересозданий — не разовая наводка, а залипание периферии: карантин
+        // индикации, чтобы плата оставалась живой и диагностируемой.
+        log::error!("display: карантин — индикация выключена после {n} rebuild (оживляется /display или рестартом)");
+        DISPLAY_ON.store(false, Ordering::Relaxed);
+    }
     // esp_hal::Peripherals re-export is private; the macro-generated struct
     // lives in esp_hal::peripherals and steal() is unsafe by design (we only
     // rebuild after the previous transfer's Drop has stopped the peripherals).
@@ -97,9 +107,16 @@ async fn send_chunk(
         let (head, _) = s.split_at_mut(len);
         head.fill(byte);
     }
+    // tx_start() внутри send() в esp-hal 1.2.2 содержит безлимитные спины по
+    // флагам I2S (while !tx_rempty / while tx_idle) — при залипании периферии
+    // от наводок индикации именно тут исполнитель вешает всю плату. Фаза 1 в
+    // снимке hang-detect = зависание внутри send().
+    hangdetect::set_phase(&hangdetect::PHASE_DISP, 1);
     match p.send(b) {
         Ok(mut xfer) => {
+            hangdetect::set_phase(&hangdetect::PHASE_DISP, 2); // DMA взведён
             hangdetect::beat(&hangdetect::FRAME);
+            hangdetect::set_phase(&hangdetect::PHASE_DISP, 3); // ждём event done
             let mut done = match xfer.wait_for_done().await {
                 Ok(()) => true,
                 Err(e) => {
@@ -118,6 +135,7 @@ async fn send_chunk(
             // stuck, never enter the spin: drop (stops peripherals cleanly)
             // and rebuild.
             if done {
+                hangdetect::set_phase(&hangdetect::PHASE_DISP, 4); // кооперативный опрос tx_idle
                 let mut ticks = 0u32;
                 while !xfer.is_done() && ticks < 400 {
                     Timer::after_micros(250).await;
@@ -126,6 +144,7 @@ async fn send_chunk(
                 done = xfer.is_done();
             }
             if done {
+                hangdetect::set_phase(&hangdetect::PHASE_DISP, 5); // wait() должен вернуться сразу
                 let (p2, b2) = xfer.wait();
                 *par = Some(p2);
                 *buf = Some(b2);
@@ -182,6 +201,7 @@ pub async fn display_task(
     let mut last_mode: u8 = 0xFF;
     let mut samples = [10u8 | (10u8 << 4); 3]; // blank до первой секунды
     loop {
+        hangdetect::set_phase(&hangdetect::PHASE_DISP, 0); // слот жив, ждём следующий
         let t0 = Instant::now();
         // Горячий путь без await CLOCK-мьютекса: epoch из атомарного кэша
         // (тикер refresh_cache), samples пересчитываются раз в секунду.

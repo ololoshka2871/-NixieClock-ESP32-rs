@@ -48,10 +48,11 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: "${{ github.event.repository.name }} ${{ github.ref_name }}"
-          body: "app_ota.bin — WiFi OTA-образ (кладётся в слот через /ota?url=... на плате),\napp.elf, sha256.txt"
+          body: "app_ota.bin — WiFi OTA-образ (кладётся в слот через /ota?url=... на плате),\nfirmware_uart.bin — merged UART-образ (espflash write-bin 0x0),\napp.elf, sha256.txt"
           files: |
             dist/app_ota.bin
             dist/app.elf
+            dist/firmware_uart.bin
             dist/sha256.txt
           sha256sum: true
 

@@ -240,6 +240,31 @@ async fn do_ota(
         log::info!("CRC32 verified: {:08x}", got);
     }
 
+    // Read-back проверка слота: CRC потока доказывает целостность ЗАКАЧКИ,
+    // но не записи во flash. Битую запись ловим здесь, а не на втором этапе
+    // загрузки (где образ уже активирован и откатывается через reboot-петлю).
+    let mut rb_crc = 0xFFFF_FFFFu32;
+    let mut rbbuf = [0u8; CHUNK];
+    let mut off = 0usize;
+    while off < size {
+        let n = (size - off).min(CHUNK);
+        if let Err(e) =
+            with_updater(|u| u.next_partition().map(|(mut r, _)| r.read(off as u32, &mut rbbuf[..n])))
+        {
+            return Err(errf(format_args!("read-back: {}", e)));
+        }
+        rb_crc = crc32(rb_crc, &rbbuf[..n]);
+        off += n;
+    }
+    let rb_crc = !rb_crc;
+    if rb_crc != got {
+        return Err(errf(format_args!(
+            "slot read-back mismatch: flash {:08x} != stream {:08x} (slot NOT activated)",
+            rb_crc, got
+        )));
+    }
+    log::info!("slot read-back CRC verified: {:08x}", rb_crc);
+
     // Активация: otadata выбирает следующий слот; состояние New означает, что
     // загрузчик (с rollback) переведёт его в PendingVerify и не подтверждённый
     // образ будет откачен.

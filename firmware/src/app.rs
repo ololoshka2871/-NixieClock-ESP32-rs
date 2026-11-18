@@ -27,8 +27,10 @@ fn now_ms() -> u64 {
 pub async fn app_task() {
     let mut cycle: u64 = 0;
     loop {
+        hangdetect::set_phase(&hangdetect::PHASE_APP, 1); // ждём следующий тик
         Timer::after(Duration::from_secs(2)).await;
         cycle += 1;
+        hangdetect::set_phase(&hangdetect::PHASE_APP, 2); // lock+feed watchdog
         APP_WD.lock().await.feed(now_ms());
         hangdetect::beat(&hangdetect::CYCLE);
         if cycle % 5 == 0 {
