@@ -152,7 +152,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "clock-core"
-version = "0.4.0"
+version = "0.6.10"
 dependencies = [
  "flate2",
  "heapless 0.9.3",
@@ -1636,7 +1636,7 @@ checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
 
 [[package]]
 name = "nixieclock-firmware"
-version = "0.4.0"
+version = "0.8.0"
 dependencies = [
  "clock-core",
  "embassy-executor",
@@ -1656,8 +1656,10 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "esp-storage",
+ "esp32 0.41.0",
  "heapless 0.9.3",
  "log",
+ "nb 1.1.0",
  "reqwless",
  "static_cell",
 ]

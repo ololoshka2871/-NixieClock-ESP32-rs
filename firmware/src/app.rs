@@ -27,11 +27,12 @@ fn now_ms() -> u64 {
 pub async fn app_task() {
     let mut cycle: u64 = 0;
     loop {
-        hangdetect::set_phase(&hangdetect::PHASE_APP, 1); // ждём следующий тик
         Timer::after(Duration::from_secs(2)).await;
         cycle += 1;
-        hangdetect::set_phase(&hangdetect::PHASE_APP, 2); // lock+feed watchdog
         APP_WD.lock().await.feed(now_ms());
+        // Liveness для независимого ISR-детектора: контракт CYCLE — «app_task
+        // циклует раз в 2 с» (hangdetect.rs). Без этого ADC бьёт CYCLE раз в
+        // 30 с, и детектор по stall 15 с перезагружает плату на каждом буте.
         hangdetect::beat(&hangdetect::CYCLE);
         if cycle % 5 == 0 {
             let led = clock_core::blink_pattern(cycle / 5, &[true, false, false, false]);
