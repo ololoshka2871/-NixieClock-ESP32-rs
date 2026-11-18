@@ -201,7 +201,7 @@ async fn main(spawner: Spawner) -> ! {
     let selected = updater::with_updater(|u| u.selected_partition());
     let mut booted_sub = None;
     let fell_back = match (&booted_app, &selected) {
-        (Some(bapp), Ok(sapp)) if *sapp != AppPartitionSubType::Factory && *sapp != bapp => {
+        (Some(bapp), Ok(sapp)) if *sapp != AppPartitionSubType::Factory && *sapp != *bapp => {
             log::warn!(
                 "otadata selects {:?} but this app boots from {:?}: bootloader rolled back",
                 sapp,
