@@ -29,5 +29,13 @@ espflash save-image --chip esp32 "$ELF" dist/app_ota.bin
 od -A x -N 4 dist/app_ota.bin
 python3 tools/check_ota_image.py dist/app_ota.bin --max-size 917504
 
-sha256sum dist/app_ota.bin dist/app.elf > dist/sha256.txt
+# Merged UART-образ: bootloader + 2MB-таблица + app в слоте ota_0;
+# пишется целиком: espflash write-bin 0x0 firmware_uart.bin
+# (otadata после такой прошивки стёрта — приложение само выставляет
+# selected по реально загруженному слоту на первом буте).
+espflash save-image --chip esp32 --merge --skip-padding \
+  --partition-table partitions_2mb.csv "$ELF" dist/firmware_uart.bin
+od -A x -j 0x8000 -N 2 dist/firmware_uart.bin
+
+sha256sum dist/app_ota.bin dist/app.elf dist/firmware_uart.bin > dist/sha256.txt
 ls -la dist/
