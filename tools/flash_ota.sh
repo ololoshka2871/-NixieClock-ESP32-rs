@@ -9,7 +9,9 @@ set -e
 BOARD="${BOARD:-192.168.0.85}"
 OTA="${OTA:-192.168.0.28:8001}"
 FILE="${1:-dist/app_ota.bin}"
-VER=$(grep -m1 '^version' core/Cargo.toml | cut -d'"' -f2)
+# Версия — из прошивки, а не из крейта clock-core: иначе файл на раздаче
+# называется app_ota_0.6.10_manual.bin, и URL «не находится» (404).
+VER=$(grep -m1 '^version' firmware/Cargo.toml | cut -d'"' -f2)
 NAME="app_ota_${VER}_manual.bin"
 [ -f "$FILE" ] || { echo "нет файла $FILE" >&2; exit 1; }
 echo "локальный sha256:"; sha256sum "$FILE"
