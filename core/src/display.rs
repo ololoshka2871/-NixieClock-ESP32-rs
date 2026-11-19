@@ -40,6 +40,12 @@ pub const fn hhmmss_digits(h: u8, m: u8, s: u8) -> [u8; 6] {
     [h / 10, h % 10, m / 10, m % 10, s / 10, s % 10]
 }
 
+/// Дата `ДД ММ ГГ` — `%02d%02d%02d` от оригинала (DateDisplayer.cpp),
+/// локальное время, ведущие нули сохраняются (1 сентября 2026 → `010926`).
+pub const fn ddmmyy_digits(day: u8, month: u8, year2: u8) -> [u8; 6] {
+    [day / 10, day % 10, month / 10, month % 10, year2 / 10, year2 % 10]
+}
+
 /// Байты трёх слотов (семп слота g из digits[g] и digits[g+3]).
 pub fn slot_samples(d: &[u8; 6]) -> [u8; 3] {
     core::array::from_fn(|g| {
@@ -271,6 +277,21 @@ mod tests {
     fn цифры_часов() {
         assert_eq!(hhmmss_digits(23, 59, 7), [2, 3, 5, 9, 0, 7]);
         assert_eq!(hhmmss_digits(0, 0, 0), [0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn цифры_даты() {
+        assert_eq!(ddmmyy_digits(9, 11, 26), [0, 9, 1, 1, 2, 6]);
+        assert_eq!(ddmmyy_digits(31, 12, 99), [3, 1, 1, 2, 9, 9]);
+    }
+
+    #[test]
+    fn цифры_даты_как_в_оригинале() {
+        // 19 ноября 2026 → 19 11 26
+        assert_eq!(ddmmyy_digits(19, 11, 26), [1, 9, 1, 1, 2, 6]);
+        // 1 сентября 2026 → ведущие нули сохраняются: 01 09 26
+        assert_eq!(ddmmyy_digits(1, 9, 26), [0, 1, 0, 9, 2, 6]);
+        assert_eq!(ddmmyy_digits(31, 12, 99), [3, 1, 1, 2, 9, 9]);
     }
 
     #[test]

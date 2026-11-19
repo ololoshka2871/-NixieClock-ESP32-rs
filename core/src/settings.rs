@@ -200,6 +200,102 @@ pub fn parse_tz_json(body: &str) -> Result<i16, &'static str> {
     crate::time::validate_tz_min(minutes)
 }
 
+
+// ---------------------------------------------------------------------------
+// Подсветка: цвет часов и эффект (POST /api/color, /api/led/effect)
+// ---------------------------------------------------------------------------
+
+/// Результат POST /api/color: либо новый цвет (0xRRGGBB), либо сброс на
+/// цвет месяца (ключ удаляется из NVS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LedColorUpdate {
+    Set(u32),
+    Reset,
+}
+
+fn json_bool_value(json: &str, key: &str) -> Option<bool> {
+    let pat = format!("\"{key}\"");
+    let at = json.find(pat.as_str())?;
+    let rest = json[at + pat.len()..].trim_start().strip_prefix(':')?.trim_start();
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Разбор `{"hex":"#rrggbb"}`, `{"r":..,"g":..,"b":..}` или `{"reset":true}`.
+pub fn parse_color_json(body: &str) -> Result<LedColorUpdate, &'static str> {
+    if json_bool_value(body, "reset") == Some(true) {
+        return Ok(LedColorUpdate::Reset);
+    }
+    if let Some(hex) = json_str_value(body, "hex") {
+        let s = hex.trim();
+        let s = s.strip_prefix('#').unwrap_or(s);
+        if s.len() != 6 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("hex: ожидается #rrggbb (6 hex-цифр)");
+        }
+        let v = u32::from_str_radix(s, 16).map_err(|_| "hex: не разобрать")?;
+        return Ok(LedColorUpdate::Set(v));
+    }
+    let r = json_int_value(body, "r");
+    let g = json_int_value(body, "g");
+    let b = json_int_value(body, "b");
+    if let (Some(r), Some(g), Some(b)) = (r, g, b) {
+        if !(0..=255).contains(&r) || !(0..=255).contains(&g) || !(0..=255).contains(&b) {
+            return Err("r/g/b: 0..255");
+        }
+        let v = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+        return Ok(LedColorUpdate::Set(v));
+    }
+    Err("нет поля hex, reset или r/g/b")
+}
+
+/// Разбор `{"effect":"off|breathing|wheel|wave"}`.
+pub fn parse_effect_json(body: &str) -> Result<u8, &'static str> {
+    let name = json_str_value(body, "effect").ok_or("нет поля effect")?;
+    crate::led::effect_from_name(name.trim()).ok_or("effect: off|breathing|wheel|wave")
+}
+
+#[cfg(test)]
+mod led_json_tests {
+    use super::*;
+
+    #[test]
+    fn color_hex_forms() {
+        assert_eq!(parse_color_json("{\"hex\":\"#00ff00\"}"), Ok(LedColorUpdate::Set(0x00ff00)));
+        assert_eq!(parse_color_json("{\"hex\":\"00FF00\"}"), Ok(LedColorUpdate::Set(0x00ff00)));
+        assert_eq!(parse_color_json("{\"hex\":\"#000000\"}"), Ok(LedColorUpdate::Set(0)));
+    }
+
+    #[test]
+    fn color_rgb_forms() {
+        assert_eq!(parse_color_json("{\"r\":255,\"g\":0,\"b\":0}"), Ok(LedColorUpdate::Set(0xff0000)));
+        assert!(parse_color_json("{\"r\":256,\"g\":0,\"b\":0}").is_err());
+        assert!(parse_color_json("{\"r\":1,\"g\":2}").is_err());
+    }
+
+    #[test]
+    fn color_reset_and_bad() {
+        assert_eq!(parse_color_json("{\"reset\":true}"), Ok(LedColorUpdate::Reset));
+        assert!(parse_color_json("{\"reset\":false}").is_err());
+        assert!(parse_color_json("{\"hex\":\"zz\"}").is_err());
+        assert!(parse_color_json("{}").is_err());
+    }
+
+    #[test]
+    fn effect_names() {
+        assert_eq!(parse_effect_json("{\"effect\":\"off\"}"), Ok(0));
+        assert_eq!(parse_effect_json("{\"effect\":\"breathing\"}"), Ok(1));
+        assert_eq!(parse_effect_json("{\"effect\":\"wheel\"}"), Ok(2));
+        assert_eq!(parse_effect_json("{\"effect\":\"wave\"}"), Ok(3));
+        assert!(parse_effect_json("{\"effect\":\"rainbow\"}").is_err());
+        assert!(parse_effect_json("{}").is_err());
+    }
+}
+
 #[cfg(test)]
 mod tz_json_tests {
     use super::*;

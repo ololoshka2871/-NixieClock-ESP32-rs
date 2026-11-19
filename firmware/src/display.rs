@@ -391,11 +391,15 @@ fn wanted_samples(mode: u8, epoch: u64, lamp: Option<u8>) -> [u8; 3] {
     }
 }
 
-/// Цифры для текущего режима кнопки: часы / CO2 / температура.
+/// Цифры для текущего режима кнопки: часы / CO2 / температура / дата.
 fn digits_for_mode(epoch: u64) -> [u8; 6] {
     match crate::ui::mode() {
         crate::ui::MODE_CO2 => clock_core::led::co2_digits(crate::sensors::co2_ppm_now()),
         crate::ui::MODE_TEMP => clock_core::led::temp_digits(crate::sensors::temp_mc_now()),
+        crate::ui::MODE_DATE => {
+            let c = crate::tz::civil(epoch);
+            display_core::ddmmyy_digits(c.day, c.month, (c.year % 100) as u8)
+        }
         _ => {
             let c = crate::tz::civil(epoch);
             display_core::hhmmss_digits(c.hour, c.min, c.sec)

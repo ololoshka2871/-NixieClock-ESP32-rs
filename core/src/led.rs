@@ -242,6 +242,142 @@ pub fn temp_digits(temp_mc: Option<i32>) -> [u8; 6] {
     out
 }
 
+
+// ---------------------------------------------------------------------------
+// Таблица цвета по месяцу (оригинал: DateDisplayer.cpp, month2Color[tm_mon])
+// ---------------------------------------------------------------------------
+
+/// 12 цветов, индекс 0 = январь ... 11 = декабрь; все 6 диодов одним цветом.
+pub const MONTH_COLORS: [Rgb; 12] = [
+    (0x00, 0x00, 0xff), // январь
+    (0x00, 0xbf, 0xff), // февраль
+    (0x00, 0xff, 0xff), // март
+    (0x99, 0xff, 0xe6), // апрель
+    (0x00, 0xff, 0x00), // май
+    (0xff, 0xff, 0x99), // июнь
+    (0xff, 0x00, 0x00), // июль
+    (0xff, 0xb3, 0x66), // август
+    (0xcc, 0xcc, 0x00), // сентябрь
+    (0x66, 0x33, 0x00), // октябрь
+    (0xa3, 0x00, 0xcc), // ноябрь
+    (0x77, 0x33, 0xff), // декабрь
+];
+
+/// Цвет месяца; вне 1..12 — чёрный (без подсветки).
+pub fn month_color(month: u8) -> Rgb {
+    if (1..=12).contains(&month) {
+        MONTH_COLORS[(month - 1) as usize]
+    } else {
+        BLACK
+    }
+}
+
+/// Подсветка режима «дата»: вся полоса цветом месяца.
+pub fn date_leds(month: u8) -> [Rgb; LEDS] {
+    [month_color(month); LEDS]
+}
+
+/// 0xRRGGBB -> (R,G,B) и обратно.
+pub fn rgb_from_u32(v: u32) -> Rgb {
+    ((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+pub fn rgb_to_u32(c: Rgb) -> u32 {
+    ((c.0 as u32) << 16) | ((c.1 as u32) << 8) | c.2 as u32
+}
+
+pub fn rgb_hex(c: Rgb) -> alloc::string::String {
+    alloc::format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2)
+}
+
+// ---------------------------------------------------------------------------
+// Эффекты подсветки часов (в оригинале их нет — новая фича)
+// ---------------------------------------------------------------------------
+
+pub const EFFECT_OFF: u8 = 0;
+pub const EFFECT_BREATHING: u8 = 1;
+pub const EFFECT_WHEEL: u8 = 2;
+pub const EFFECT_WAVE: u8 = 3;
+
+pub const BREATH_PERIOD_MS: u32 = 4_000;
+pub const WHEEL_PERIOD_MS: u32 = 24_000;
+pub const WAVE_PERIOD_MS: u32 = 3_000;
+
+pub fn effect_name(e: u8) -> &'static str {
+    match e {
+        EFFECT_BREATHING => "breathing",
+        EFFECT_WHEEL => "wheel",
+        EFFECT_WAVE => "wave",
+        _ => "off",
+    }
+}
+
+pub fn effect_from_name(n: &str) -> Option<u8> {
+    match n {
+        "off" => Some(EFFECT_OFF),
+        "breathing" => Some(EFFECT_BREATHING),
+        "wheel" => Some(EFFECT_WHEEL),
+        "wave" => Some(EFFECT_WAVE),
+        _ => None,
+    }
+}
+
+/// sin на [-pi,pi] (в core нет libm; ряд Тейлора, ошибка < 1e-5 на этом диапазоне).
+fn sinf(x: f32) -> f32 {
+    const PI: f32 = 3.14159265;
+    const TWO_PI: f32 = 6.28318531;
+    let mut a = x % TWO_PI;
+    if a > PI {
+        a -= TWO_PI;
+    } else if a < -PI {
+        a += TWO_PI;
+    }
+    let x2 = a * a;
+    // Тейлор до x^17: на [-pi,pi] ошибка < 1e-6.
+    let mut term = a;
+    let mut sum = a;
+    for n in 1..=8u32 {
+        term = -term * x2 / ((2 * n) as f32 * (2 * n + 1) as f32);
+        sum += term;
+    }
+    sum
+}
+
+fn scale(c: Rgb, k: f32) -> Rgb {
+    let k = k.clamp(0.0, 1.0);
+    (
+        (c.0 as f32 * k) as u8,
+        (c.1 as f32 * k) as u8,
+        (c.2 as f32 * k) as u8,
+    )
+}
+
+/// Кадр подсветки часов: статический цвет или один из эффектов.
+/// `t_ms` — время с начала работы (монотонные миллисекунды).
+pub fn clock_effect(base: Rgb, effect: u8, t_ms: u32) -> [Rgb; LEDS] {
+    match effect {
+        EFFECT_BREATHING => {
+            let ph = (t_ms % BREATH_PERIOD_MS) as f32 / BREATH_PERIOD_MS as f32 * 6.28318531;
+            // 0.10 .. 1.00: почти гасит и разгорается
+            let k = 0.55 + 0.45 * sinf(ph);
+            [scale(base, k); LEDS]
+        }
+        EFFECT_WHEEL => {
+            // колесо FastLED: hue 0..255 за полный оборот
+            let h = (((t_ms % WHEEL_PERIOD_MS) * 255) / WHEEL_PERIOD_MS) as u8;
+            [hsv2rgb(h, 255, 255); LEDS]
+        }
+        EFFECT_WAVE => {
+            let ph = (t_ms % WAVE_PERIOD_MS) as f32 / WAVE_PERIOD_MS as f32 * 6.28318531;
+            core::array::from_fn(|i| {
+                let s = 0.5 + 0.5 * sinf(ph + i as f32 * 3.14159265 / 3.0);
+                scale(base, 0.30 + 0.70 * s)
+            })
+        }
+        _ => [base; LEDS],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +484,86 @@ mod tests {
     fn clock_leds_default_off() {
         assert_eq!(clock_leds(None), [BLACK; LEDS]);
         assert!(leds_eq(clock_leds(Some(RED)), [RED; LEDS]));
+    }
+
+    #[test]
+    fn month_table_matches_original() {
+        // 1-в-1 с DateDisplayer.cpp
+        assert_eq!(month_color(1), (0x00, 0x00, 0xff));
+        assert_eq!(month_color(5), (0x00, 0xff, 0x00));
+        assert_eq!(month_color(7), (0xff, 0x00, 0x00));
+        assert_eq!(month_color(11), (0xa3, 0x00, 0xcc));
+        assert_eq!(month_color(12), (0x77, 0x33, 0xff));
+        assert_eq!(month_color(0), BLACK);
+        assert_eq!(month_color(13), BLACK);
+        assert_eq!(date_leds(7), [(0xff, 0x00, 0x00); LEDS]);
+    }
+
+    #[test]
+    fn color_u32_roundtrip() {
+        let c = rgb_from_u32(0x1a2b3c);
+        assert_eq!(c, (0x1a, 0x2b, 0x3c));
+        assert_eq!(rgb_to_u32(c), 0x1a2b3c);
+        assert_eq!(rgb_hex(c), "#1a2b3c");
+    }
+
+    #[test]
+    fn sin_matches_known_values() {
+        assert!((sinf(0.0)).abs() < 1e-6);
+        assert!((sinf(1.5707963) - 1.0).abs() < 1e-4);
+        assert!((sinf(3.14159265)).abs() < 1e-4);
+        assert!((sinf(-1.5707963) + 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn effect_off_is_static() {
+        let c = (0x12, 0x34, 0x56);
+        for t in [0u32, 700, 2_000, 9_999] {
+            assert_eq!(clock_effect(c, EFFECT_OFF, t), [c; LEDS]);
+        }
+    }
+
+    #[test]
+    fn breathing_between_dark_and_full() {
+        let c = (100u8, 200u8, 50u8);
+        let mut min = 255u8;
+        let mut max = 0u8;
+        for t in (0..BREATH_PERIOD_MS).step_by(50) {
+            let f = clock_effect(c, EFFECT_BREATHING, t);
+            let v = f[0].0;
+            min = min.min(v);
+            max = max.max(v);
+        }
+        assert!(min < 20, "дыхание почти гасит: min={min}");
+        assert!(max > 95, "дыхание доходит до полного: max={max}");
+    }
+
+    #[test]
+    fn wheel_covers_red_and_blue() {
+        let f0 = clock_effect(BLACK, EFFECT_WHEEL, 0);
+        assert_eq!(f0[0], RED);
+        let f_blue = clock_effect(BLACK, EFFECT_WHEEL, WHEEL_PERIOD_MS * 160 / 255);
+        assert_eq!(f_blue[0].0, 0);
+        assert!(f_blue[0].2 > 200, "около синей точки: {:?}", f_blue[0]);
+        assert_eq!(hsv2rgb(160, 255, 255), BLUE);
+        // полный оборот возвращает к красному
+        let f_end = clock_effect(BLACK, EFFECT_WHEEL, WHEEL_PERIOD_MS);
+        assert_eq!(f_end[0], RED);
+    }
+
+    #[test]
+    fn wave_has_gradient_not_uniform() {
+        let f = clock_effect(RED, EFFECT_WAVE, 500);
+        assert!(f.iter().any(|c| *c != f[0]), "волна даёт разные яркости вдоль полосы");
+        assert!(f.iter().all(|c| c.0 > 0 && c.1 == 0 && c.2 == 0), "градиент по красному");
+        assert!(f[0].0 > 200, "начало полосы почти полное: {}", f[0].0);
+    }
+
+    #[test]
+    fn effect_names_roundtrip() {
+        for e in [EFFECT_OFF, EFFECT_BREATHING, EFFECT_WHEEL, EFFECT_WAVE] {
+            assert_eq!(effect_from_name(effect_name(e)), Some(e));
+        }
+        assert_eq!(effect_from_name("nope"), None);
     }
 }

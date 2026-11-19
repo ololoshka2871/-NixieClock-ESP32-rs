@@ -1,8 +1,8 @@
 //! Кнопка BOOT (GPIO0, активный уровень 0) и режимы индикации.
 //!
-//! Режимы: часы → CO2 → температура → часы. Клик — короткое нажатие (< 1 с).
-//! Через 5 с без нажатий индикация сама возвращается к часам (как
-//! `DEFAULT_IDLE_TIMEOUT = 5_s` в оригинальном IDF-проекте).
+//! Режимы (как в оригинале): часы → CO2 → температура → дата → часы.
+//! Клик — короткое нажатие (< 1 с). Через 5 с без нажатий индикация сама
+//! возвращается к часам (как `DEFAULT_IDLE_TIMEOUT = 5_s` в оригинале).
 //!
 //! Режим — единственный `AtomicU8`: его читают и кадровый движок индикации
 //! (какие цифры формировать), и задача подсветки (какие цвета выставлять).
@@ -19,6 +19,8 @@ pub const MODE_CLOCK: u8 = 0;
 pub const MODE_CO2: u8 = 1;
 /// Температура (`__XXYY`) + цветовая шкала на подсветке.
 pub const MODE_TEMP: u8 = 2;
+/// Дата `ДД ММ ГГ` + подсветка цветом месяца (как в оригинале).
+pub const MODE_DATE: u8 = 3;
 
 /// Возврат к часам после стольких секунд без нажатий.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -39,12 +41,13 @@ pub fn set_mode(m: u8) {
     MODE.store(m, Ordering::Relaxed);
 }
 
-/// Следующий режим по кругу (часы → CO2 → температура → часы).
+/// Следующий режим по кругу: часы → CO2 → температура → дата → часы.
 pub fn next_mode() -> u8 {
     let next = match mode() {
+        MODE_CLOCK => MODE_CO2,
         MODE_CO2 => MODE_TEMP,
-        MODE_TEMP => MODE_CLOCK,
-        _ => MODE_CO2,
+        MODE_TEMP => MODE_DATE,
+        _ => MODE_CLOCK,
     };
     set_mode(next);
     next
@@ -54,6 +57,7 @@ pub fn mode_name(m: u8) -> &'static str {
     match m {
         MODE_CO2 => "CO2",
         MODE_TEMP => "температура",
+        MODE_DATE => "дата",
         _ => "часы",
     }
 }
@@ -65,7 +69,7 @@ pub async fn button_task(pin: esp_hal::peripherals::GPIO0<'static>) {
     let mut pressed = btn.is_low();
     let mut since_press = Instant::now();
     let mut last_activity = Instant::now();
-    log::info!("кнопка BOOT: GPIO0, режимы часы/CO2/температура, возврат через 5 с");
+    log::info!("кнопка BOOT: GPIO0, режимы часы/CO2/температура/дата, возврат через 5 с");
 
     loop {
         let low = btn.is_low();

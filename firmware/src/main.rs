@@ -279,6 +279,8 @@ async fn main(spawner: Spawner) -> ! {
     settings::set_active(&creds, saved.is_some());
     // Пояс из NVS: до старта индикации и часовых задач.
     tz::load();
+    // Подсветка из NVS (цвет часов, эффект) — до старта задач индикации.
+    settings::load_led();
     let station_config = WifiConfig::Station(
         StationConfig::default()
             .with_ssid(creds.ssid.as_str().try_into().unwrap())

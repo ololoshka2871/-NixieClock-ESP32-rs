@@ -24,6 +24,13 @@ async function poll() {
         if (!tzTouched && document.activeElement !== $("tz_in")) $("tz_in").value = String(s.tz_min);
         $("time_src").textContent = (s.time_source || "?") + (s.time_synced ? "" : " (не подтверждено)");
         $("ntp_cur").textContent = s.ntp_server || "пулы по умолчанию";
+        $("led_color").textContent = s.led_color || "—";
+        $("led_month").textContent = s.led_color_month || "—";
+        $("led_effect").textContent = s.led_effect || "—";
+        $("led_mode").textContent = s.mode || "—";
+        if (!ledTouched && document.activeElement !== $("led_pick")) {
+            $("led_pick").value = (s.led_color_set && s.led_color) ? s.led_color : (s.led_color_month || "#000000");
+        }
     } catch (e) { $("uptime").textContent = "сервер недоступен" }
 }
 poll(); setInterval(poll, 3000);
@@ -164,3 +171,40 @@ async function pollDiag() {
 }
 pollDiag();
 setInterval(pollDiag, 3000);
+
+// ---- подсветка часов ----
+let ledTouched = false;
+$("led_pick").addEventListener("change", () => { ledTouched = true });
+$("led_apply").onclick = async () => {
+    const hex = $("led_pick").value;
+    $("led_msg").textContent = "сохраняю…";
+    try {
+        const r = await fetch("/api/color", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hex }) });
+        const k = await r.json();
+        $("led_msg").textContent = k.status === "saved"
+            ? ("цвет часов: " + k.color)
+            : ("ошибка: " + (k.error || r.status));
+        ledTouched = false;
+        poll();
+    } catch (e) { $("led_msg").textContent = "ошибка: " + e }
+};
+$("led_reset").onclick = async () => {
+    $("led_msg").textContent = "сбрасываю…";
+    try {
+        const r = await fetch("/api/color", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reset: true }) });
+        const k = await r.json();
+        $("led_msg").textContent = k.status === "saved" ? ("цвет по таблице месяца: " + k.color) : ("ошибка: " + (k.error || r.status));
+        ledTouched = false;
+        poll();
+    } catch (e) { $("led_msg").textContent = "ошибка: " + e }
+};
+$("led_fx_apply").onclick = async () => {
+    const effect = $("led_fx").value;
+    $("led_msg").textContent = "сохраняю…";
+    try {
+        const r = await fetch("/api/led/effect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ effect }) });
+        const k = await r.json();
+        $("led_msg").textContent = k.status === "saved" ? ("эффект: " + k.effect) : ("ошибка: " + (k.error || r.status));
+        poll();
+    } catch (e) { $("led_msg").textContent = "ошибка: " + e }
+};

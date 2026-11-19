@@ -3,6 +3,7 @@
 //! Раздел ищется в таблице разделов; при первой прошивке/битой NVS — fallback.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use clock_core::settings::{SCHEMA_VER, WifiCredentials};
 use embassy_sync::blocking_mutex::{
@@ -24,6 +25,13 @@ const K_SSID: Key = const { Key::from_str("ssid") };
 const K_PASS: Key = const { Key::from_str("pass") };
 const K_NTP: Key = const { Key::from_str("ntp_server") };
 const K_TZ: Key = const { Key::from_str("tz_min") };
+const K_COLOR: Key = const { Key::from_str("clock_color") };
+const K_EFFECT: Key = const { Key::from_str("led_effect") };
+
+/// Кэш подсветки: flash читать нельзя в горячем пути индикации.
+/// `u32::MAX` = пользовательский цвет не сохранён -> действует цвет месяца.
+static CLOCK_COLOR: AtomicU32 = AtomicU32::new(u32::MAX);
+static LED_EFFECT: AtomicU8 = AtomicU8::new(0);
 
 /// Открыть NVS поверх общей flash: найти раздел nvs в таблице разделов,
 /// открыть, выполнить замыкание, закрыть (flash при этом освобождается).
@@ -192,4 +200,70 @@ pub fn save_tz(minutes: i16) -> Result<(), &'static str> {
         Ok(())
     })
     .ok_or("nvs: раздел недоступен")?
+}
+
+/// Прочитать сохранённый цвет подсветки часов; None — ключа нет (цвет месяца).
+pub fn clock_color() -> Option<u32> {
+    let v = CLOCK_COLOR.load(Ordering::Relaxed);
+    if v == u32::MAX {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+pub fn led_effect() -> u8 {
+    LED_EFFECT.load(Ordering::Relaxed)
+}
+
+/// Загрузить подсветку из NVS в атомики (вызывается один раз на бутe).
+pub fn load_led() {
+    let color = with_nvs(|nvs| nvs.get::<u32>(&NS, &K_COLOR).ok()).flatten();
+    let eff = with_nvs(|nvs| nvs.get::<u8>(&NS, &K_EFFECT).ok()).flatten();
+    CLOCK_COLOR.store(color.unwrap_or(u32::MAX), Ordering::Relaxed);
+    LED_EFFECT.store(eff.filter(|v| *v <= 3).unwrap_or(0), Ordering::Relaxed);
+    match color {
+        Some(v) => log::info!(
+            "подсветка: цвет #{:06x}, эффект {}",
+            v,
+            clock_core::led::effect_name(led_effect())
+        ),
+        None => log::info!(
+            "подсветка: цвет месяца, эффект {}",
+            clock_core::led::effect_name(led_effect())
+        ),
+    }
+}
+
+/// Сохранить цвет (0xRRGGBB) или сбросить ключ (None = цвет месяца).
+pub fn save_color(value: Option<u32>) -> Result<(), &'static str> {
+    let r = with_nvs(|nvs| {
+        match value {
+            Some(v) => nvs.set(&NS, &K_COLOR, v).map_err(|_| "nvs: запись clock_color")?,
+            None => nvs.delete(&NS, &K_COLOR).map_err(|_| "nvs: удаление clock_color")?,
+        }
+        Ok::<(), &'static str>(())
+    })
+    .ok_or("nvs: раздел недоступен")?;
+    r?;
+    CLOCK_COLOR.store(value.unwrap_or(u32::MAX), Ordering::Relaxed);
+    log::info!("NVS: подсветка часов -> {:?}", value);
+    Ok(())
+}
+
+/// Сохранить эффект (0..3).
+pub fn save_effect(e: u8) -> Result<(), &'static str> {
+    if e > 3 {
+        return Err("effect: 0..3");
+    }
+    let r = with_nvs(|nvs| {
+        nvs.set(&NS, &K_EFFECT, e)
+            .map_err(|_| "nvs: запись led_effect")?;
+        Ok::<(), &'static str>(())
+    })
+    .ok_or("nvs: раздел недоступен")?;
+    r?;
+    LED_EFFECT.store(e, Ordering::Relaxed);
+    log::info!("NVS: эффект подсветки -> {}", clock_core::led::effect_name(e));
+    Ok(())
 }

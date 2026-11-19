@@ -30,8 +30,10 @@ pub const CODES: usize = BITS + 1;
 /// Байт в кадре: 6 × 3 (G, R, B — порядок провода WS2812).
 pub const FRAME_BYTES: usize = led::LEDS * 3;
 
-/// Период пересчёта кадра: датчики обновляются раз в 10 с, чаще незачем.
+/// Период пересчёта статического кадра: датчики обновляются раз в 10 с.
 const PERIOD: Duration = Duration::from_millis(200);
+/// Период для эффектов подсветки часов (30 Гц — достаточно для «дыхания»).
+const PERIOD_ANIM: Duration = Duration::from_millis(30);
 
 /// Кодирование байтов кадра в посылки RMT (MSB первым).
 pub fn encode(bytes: &[u8; FRAME_BYTES]) -> [PulseCode; CODES] {
@@ -53,13 +55,23 @@ pub fn encode(bytes: &[u8; FRAME_BYTES]) -> [PulseCode; CODES] {
     out
 }
 
+/// Цвет подсветки часов: сохранённый пользователем, иначе цвет месяца.
+fn clock_base(c: clock_core::time::Civil) -> led::Rgb {
+    match crate::settings::clock_color() {
+        Some(v) => led::rgb_from_u32(v),
+        None => led::month_color(c.month),
+    }
+}
+
 /// Текущий кадр под режим индикации (G, R, B на каждый светодиод).
-pub fn current_frame() -> [u8; FRAME_BYTES] {
-    let colors = match crate::ui::mode() {
+pub fn current_frame(t_ms: u32) -> [u8; FRAME_BYTES] {
+    let mode = crate::ui::mode();
+    let c = crate::tz::civil(crate::clock::epoch_cached());
+    let colors = match mode {
         crate::ui::MODE_CO2 => led::co2_leds(crate::sensors::co2_ppm_now()),
         crate::ui::MODE_TEMP => led::temp_leds(crate::sensors::temp_mc_now()),
-        // Фон часов в оригинале — цвет из настроек, по умолчанию чёрный.
-        _ => led::clock_leds(None),
+        crate::ui::MODE_DATE => led::date_leds(c.month),
+        _ => led::clock_effect(clock_base(c), crate::settings::led_effect(), t_ms),
     };
     let mut out = [0u8; FRAME_BYTES];
     for (i, (r, g, b)) in colors.iter().enumerate() {
@@ -97,9 +109,13 @@ pub async fn led_task(
 
     let mut last = [0xFFu8; FRAME_BYTES];
     let mut warned = false; // один warning за бут: иначе лог забивается
+    let mut t_ms: u32 = 0;
     log::info!("подсветка: WS2812 на GPIO15, светодиодов: {}", led::LEDS);
     loop {
-        let frame = current_frame();
+        let frame = current_frame(t_ms);
+        let anim = crate::ui::mode() == crate::ui::MODE_CLOCK
+            && crate::settings::led_effect() != led::EFFECT_OFF;
+        let period = if anim { PERIOD_ANIM } else { PERIOD };
         if frame != last {
             let codes = encode(&frame);
             match chan.transmit(&codes[..]) {
@@ -124,6 +140,7 @@ pub async fn led_task(
                 }
             }
         }
-        Timer::after(PERIOD).await;
+        Timer::after(period).await;
+        t_ms = t_ms.wrapping_add(period.as_millis() as u32);
     }
 }

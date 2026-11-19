@@ -56,6 +56,31 @@
             после установки пишется в DS1307. Пустой NTP-сервер = встроенные пулы (pool.ntp.org, time.google.com).</div>
     </div>
 
+    <h2>Подсветка</h2>
+    <div class="card">
+        <div class="kv">
+            <b>цвет часов</b><span id="led_color">—</span>
+            <b>цвет месяца</b><span id="led_month">—</span>
+            <b>эффект</b><span id="led_effect">—</span>
+            <b>режим</b><span id="led_mode">—</span>
+        </div>
+        <div class="row">
+            <input type="color" id="led_pick" value="#000000" title="цвет подсветки часов">
+            <button id="led_apply">Применить цвет</button>
+            <button class="sec" id="led_reset">Цвет месяца</button>
+        </div>
+        <div class="row">
+            <select id="led_fx">
+                <option value="off">выключено (статический цвет)</option>
+                <option value="breathing">дыхание — вся полоса пульсирует</option>
+                <option value="wheel">колесо — перелив по кругу</option>
+                <option value="wave">волна — бегущий градиент</option>
+            </select>
+            <button id="led_fx_apply">Применить эффект</button>
+        </div>
+        <div id="led_msg" class="note">Подсветка часов по умолчанию — цвет месяца (таблица оригинала); свой цвет (в т.ч. чёрный) задаётся цветовым пикером. Эффекты работают только в режиме часов.</div>
+    </div>
+
     <h2>Диагностика индикации</h2>
     <div class="card">
         <div class="row" id="digits"></div>

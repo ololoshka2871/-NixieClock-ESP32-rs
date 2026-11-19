@@ -176,12 +176,22 @@ async fn handle<'a>(
                 read_post_body(socket, reqbuf, &mut raw, len).await;
                 handle_ntp_set(socket, raw.as_slice()).await;
             }
+            "/api/color" => {
+                let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+                read_post_body(socket, reqbuf, &mut raw, len).await;
+                handle_color_set(socket, raw.as_slice()).await;
+            }
+            "/api/led/effect" => {
+                let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+                read_post_body(socket, reqbuf, &mut raw, len).await;
+                handle_effect_set(socket, raw.as_slice()).await;
+            }
             _ => {
                 respond(
                     socket,
                     "405 Method Not Allowed",
                     "text/plain",
-                    "POST is accepted on /api/wifi/connect, /api/time, /api/ntp and /api/tz\n",
+                    "POST is accepted on /api/wifi/connect, /api/time, /api/ntp, /api/tz, /api/color and /api/led/effect\n",
                 )
                 .await;
             }
@@ -221,7 +231,8 @@ async fn handle<'a>(
             }
             let ntp_saved = crate::settings::load_ntp();
             let aw = crate::settings::active_wifi();
-            let (epoch, civil, tsource, synced) = crate::clock::snapshot().await;
+            let (epoch, civil_str, tsource, synced) = crate::clock::snapshot().await;
+            let civil = crate::tz::civil(epoch);
             // M5: показания датчиков (None, если таск ещё не отчитался).
             // temp_mc из 1-Wire кодека — микроградусы (разрешение DS18B20 1/16 °C,
             // целые миллиградусы не выразимы); приводим к общему знаменателю JSON —
@@ -237,6 +248,11 @@ async fn handle<'a>(
                     s.v12_mv,
                 )
             };
+            let month = clock_core::led::month_color(civil.month);
+            let saved = crate::settings::clock_color();
+            let effective = saved.map(clock_core::led::rgb_from_u32).unwrap_or(month);
+            let led_hex = clock_core::led::rgb_hex(effective);
+            let month_hex = clock_core::led::rgb_hex(month);
             let snap = clock_core::StatusSnapshot {
                 uptime_secs: Instant::now().as_secs(),
                 fw: env!("CARGO_PKG_NAME"),
@@ -251,7 +267,7 @@ async fn handle<'a>(
                 wifi_saved: aw.from_nvs,
                 time_epoch: epoch,
                 tz_min: crate::tz::get(),
-                time: Some(civil.as_str()),
+                time: Some(civil_str.as_str()),
                 time_source: tsource.as_str(),
                 time_synced: synced,
                 ntp_server: ntp_saved.as_ref().map(|s| s.as_str()),
@@ -264,6 +280,11 @@ async fn handle<'a>(
                 v33_mv,
                 v5_mv,
                 v12_mv,
+                led_color: led_hex.as_str(),
+                led_color_set: saved.is_some(),
+                led_color_month: month_hex.as_str(),
+                led_effect: clock_core::led::effect_name(crate::settings::led_effect()),
+                mode: crate::ui::mode_name(crate::ui::mode()),
             };
             let _ = write!(body, "{}", snap);
             respond(socket, "200 OK", "application/json", body.as_str()).await;
@@ -759,9 +780,75 @@ async fn handle_tz_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
     let mut msg: String<128> = String::new();
     let _ = write!(
         msg,
+
         "{{\"status\":\"saved\",\"tz_min\":{},\"time\":\"{}\"}}\n",
         minutes,
         crate::tz::string(crate::clock::epoch_cached())
+    );
+    respond(socket, "200 OK", "application/json", msg.as_str()).await;
+}
+
+/// POST /api/color: {"hex":"#rrggbb"} | {"r":..,"g":..,"b":..} | {"reset":true}.
+/// Без сохранённого цвета режим часов берёт цвет месяца (как в оригинале),
+/// поэтому reset удаляет ключ и возвращает поведение по умолчанию.
+async fn handle_color_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
+    let text = core::str::from_utf8(raw).unwrap_or("");
+    let update = match clock_core::settings::parse_color_json(text) {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("цвет: rejected: {}", e);
+            let mut msg: String<96> = String::new();
+            let _ = write!(msg, "{{\"status\":\"error\",\"error\":\"{}\"}}\n", e);
+            respond(socket, "400 Bad Request", "application/json", msg.as_str()).await;
+            return;
+        }
+    };
+    let value = match update {
+        clock_core::settings::LedColorUpdate::Set(v) => Some(v),
+        clock_core::settings::LedColorUpdate::Reset => None,
+    };
+    if let Err(e) = crate::settings::save_color(value) {
+        log::error!("цвет: NVS save failed: {}", e);
+        respond(socket, "500 Internal Server Error", "text/plain", "nvs write failed\n").await;
+        return;
+    }
+    let month = clock_core::led::month_color(crate::tz::civil(crate::clock::epoch_cached()).month);
+    let effective = value.map(clock_core::led::rgb_from_u32).unwrap_or(month);
+    let hex = clock_core::led::rgb_hex(effective);
+    log::info!("цвет часов: {} (set={})", hex, value.is_some());
+    let mut msg: String<128> = String::new();
+    let _ = write!(
+        msg,
+        "{{\"status\":\"saved\",\"color\":\"{}\",\"set\":{}}}\n",
+        hex,
+        value.is_some()
+    );
+    respond(socket, "200 OK", "application/json", msg.as_str()).await;
+}
+
+/// POST /api/led/effect: {"effect":"off|breathing|wheel|wave"}.
+async fn handle_effect_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
+    let text = core::str::from_utf8(raw).unwrap_or("");
+    let e = match clock_core::settings::parse_effect_json(text) {
+        Ok(v) => v,
+        Err(err) => {
+            log::warn!("эффект: rejected: {}", err);
+            let mut msg: String<96> = String::new();
+            let _ = write!(msg, "{{\"status\":\"error\",\"error\":\"{}\"}}\n", err);
+            respond(socket, "400 Bad Request", "application/json", msg.as_str()).await;
+            return;
+        }
+    };
+    if let Err(err) = crate::settings::save_effect(e) {
+        log::error!("эффект: NVS save failed: {}", err);
+        respond(socket, "500 Internal Server Error", "text/plain", "nvs write failed\n").await;
+        return;
+    }
+    let mut msg: String<96> = String::new();
+    let _ = write!(
+        msg,
+        "{{\"status\":\"saved\",\"effect\":\"{}\"}}\n",
+        clock_core::led::effect_name(e)
     );
     respond(socket, "200 OK", "application/json", msg.as_str()).await;
 }
