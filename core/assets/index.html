@@ -39,16 +39,20 @@
     <h2>Время</h2>
     <div class="card">
         <div class="kv">
-            <b>сейчас (UTC)</b><span id="time_now" class="big">—</span>
+            <b>сейчас</b><span id="time_now" class="big">—</span>
+            <b>часовой пояс</b><span id="tz_cur">—</span>
             <b>источник</b><span id="time_src">—</span>
             <b>NTP-сервер</b><span id="ntp_cur">—</span>
         </div>
+        <div class="row"><select id="tz_in"></select><button id="tz_btn">Сохранить пояс</button></div>
+        <div id="tz_msg" class="note"></div>
         <div class="row"><input type="text" id="ntp_in" placeholder="NTP-сервер: IP или имя (напр. 192.168.0.28)"
                 maxlength="63"><button id="ntp_btn">Сохранить NTP</button></div>
         <div id="ntp_msg" class="note"></div>
         <div class="row"><input type="datetime-local" id="time_set_in" step="1"><button id="time_btn">Установить
                 вручную</button></div>
-        <div id="time_msg" class="note">DS1307 (I2C0) + SNTP каждые 24 ч. Ручная установка — UTC-время, когда нет сети;
+        <div id="time_msg" class="note">DS1307 (I2C0) + SNTP каждые 24 ч. Часы внутри живут в UTC, пояс влияет только на показ
+            (индикатор, WebUI, лог). Ручная установка — UTC-время, когда нет сети;
             после установки пишется в DS1307. Пустой NTP-сервер = встроенные пулы (pool.ntp.org, time.google.com).</div>
     </div>
 

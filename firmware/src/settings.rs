@@ -23,6 +23,7 @@ const K_SCHEMA: Key = const { Key::from_str("schema_ver") };
 const K_SSID: Key = const { Key::from_str("ssid") };
 const K_PASS: Key = const { Key::from_str("pass") };
 const K_NTP: Key = const { Key::from_str("ntp_server") };
+const K_TZ: Key = const { Key::from_str("tz_min") };
 
 /// Открыть NVS поверх общей flash: найти раздел nvs в таблице разделов,
 /// открыть, выполнить замыкание, закрыть (flash при этом освобождается).
@@ -173,4 +174,22 @@ pub fn set_active(creds: &WifiCredentials, from_nvs: bool) {
 
 pub fn active_wifi() -> ActiveWifi {
     WIFI_ACTIVE.lock(|cell| cell.borrow().clone())
+}
+
+/// Прочитать смещение пояса (минуты от UTC); None — не сохранено или битое.
+pub fn load_tz() -> Option<i16> {
+    with_nvs(|nvs| nvs.get::<i32>(&NS, &K_TZ).ok())
+        .flatten()
+        .and_then(|v| clock_core::time::validate_tz_min(v).ok())
+}
+
+/// Сохранить смещение пояса. Часы остаются в UTC — это только отображение.
+pub fn save_tz(minutes: i16) -> Result<(), &'static str> {
+    with_nvs(|nvs| {
+        nvs.set(&NS, &K_TZ, minutes as i32)
+            .map_err(|_| "nvs: запись tz_min")?;
+        log::info!("NVS: часовой пояс {:+.2} ч от UTC", minutes as f32 / 60.0);
+        Ok(())
+    })
+    .ok_or("nvs: раздел недоступен")?
 }

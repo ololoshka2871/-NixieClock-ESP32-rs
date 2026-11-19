@@ -20,6 +20,8 @@ async function poll() {
         const el = $("ota_state"); el.textContent = s.ota_state + (s.pending ? " (ждет подтверждения)" : "");
         el.className = s.ota_state === "Valid" ? "ok" : (s.pending || s.ota_state === "New" ? "warn" : "err");
         $("time_now").textContent = s.time || "—";
+        $("tz_cur").textContent = tzLabel(s.tz_min);
+        if (!tzTouched && document.activeElement !== $("tz_in")) $("tz_in").value = String(s.tz_min);
         $("time_src").textContent = (s.time_source || "?") + (s.time_synced ? "" : " (не подтверждено)");
         $("ntp_cur").textContent = s.ntp_server || "пулы по умолчанию";
     } catch (e) { $("uptime").textContent = "сервер недоступен" }
@@ -47,16 +49,58 @@ $("wifi_btn").onclick = async () => {
     } catch (e) { $("wifi_msg").textContent = "ошибка: " + e }
 };
 
+// ---- часовой пояс: смещение от UTC в минутах ----
+const MOSCOW = 180;
+function tzLabel(min) {
+    if (min == null) return "—";
+    const a = Math.abs(min), h = Math.floor(a / 60), m = a % 60;
+    const s = "UTC" + (min < 0 ? "-" : "+") + String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+    return min === MOSCOW ? s + " (Москва)" : s;
+}
+// Шаг 30 мин по всему диапазону UTC-12:00…UTC+14:00 плюс получасовые/45-минутные пояса.
+function tzOffsets() {
+    const out = [];
+    for (let m = -720; m <= 840; m += 30) out.push(m);
+    for (const m of [345, 570, 765]) if (!out.includes(m)) out.push(m);
+    return out.sort((a, b) => a - b);
+}
+let tzTouched = false;
+(function fillTz() {
+    const sel = $("tz_in");
+    for (const m of tzOffsets()) {
+        const o = document.createElement("option");
+        o.value = String(m); o.textContent = tzLabel(m);
+        sel.appendChild(o);
+    }
+    sel.value = String(MOSCOW);
+    sel.addEventListener("change", () => { tzTouched = true; $("tz_msg").textContent = "" });
+})();
+$("tz_btn").onclick = async () => {
+    const tz_min = parseInt($("tz_in").value, 10);
+    $("tz_msg").textContent = "сохраняю…";
+    try {
+        const r = await fetch("/api/tz", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tz_min }) });
+        const k = await r.json();
+        if (k.status === "saved") {
+            tzTouched = false;
+            $("tz_msg").textContent = "пояс " + tzLabel(k.tz_min) + " сохранён, часы показывают " + k.time;
+        } else {
+            $("tz_msg").textContent = "ошибка: " + (k.error || r.status);
+        }
+        poll();
+    } catch (e) { $("tz_msg").textContent = "ошибка: " + e }
+};
+
 $("time_btn").onclick = async () => {
     const v = $("time_set_in").value;
-    if (!v) { $("time_msg").textContent = "выберите дату и время (UTC)"; return; }
+    if (!v) { $("time_msg").textContent = "выберите дату и время (UTC, пояс применяется только к показу)"; return; }
     const ep = Math.floor(Date.parse(v + "Z") / 1000); // datetime-local трактуем как UTC
     if (isNaN(ep)) { $("time_msg").textContent = "не читается дата"; return; }
     $("time_msg").textContent = "устанавливаю…";
     try {
         const r = await fetch("/api/time", { method: "POST", body: "epoch=" + ep });
         const j = await r.json();
-        $("time_msg").textContent = r.ok ? ("установлено: " + j.time + " UTC") : ("ошибка: " + (r.status));
+        $("time_msg").textContent = r.ok ? ("установлено: " + j.time + " (локальное)") : ("ошибка: " + (r.status));
         poll();
     } catch (e) { $("time_msg").textContent = "ошибка: " + e }
 };
@@ -74,7 +118,7 @@ $("ntp_btn").onclick = async () => {
     } catch (e) { $("ntp_msg").textContent = "ошибка: " + e }
 };
 
-// ---- диагностика индикации, самопроверка, питание ----
+// ---- диагностика индикации ----
 async function getText(u) { const r = await fetch(u, { cache: "no-store" }); return await r.text() }
 async function kv(u) {
     const t = await getText(u), o = {};

@@ -39,6 +39,7 @@ mod tests {
         assert!(page.trim_end().ends_with("</html>"));
         for id in ["uptime", "fw", "ip", "ota_state", "ota_url", "ota_btn", "revert_btn", "logs", "wifi_cur", "wifi_src", "wifi_ssid_in", "wifi_pass_in", "wifi_btn", "wifi_msg",
             "digits", "lamp_sel", "nostrobe", "fade", "d_clock", "d_off", "d_cycle", "d_raw",
+            "time_now", "time_src", "ntp_cur", "ntp_in", "ntp_btn", "tz_in", "tz_btn", "tz_cur",
             ] {
             assert!(page.contains(&format!("id=\"{id}\"")), "missing #{id}");
         }

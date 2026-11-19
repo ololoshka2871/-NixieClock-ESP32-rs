@@ -181,3 +181,42 @@ mod tests {
         assert!(parse_wifi_json("").is_err());
     }
 }
+
+/// Достать целое число `{"tz_min": 180}` (знак разрешён, пробелы — да).
+fn json_int_value(json: &str, key: &str) -> Option<i32> {
+    let pat = format!("\"{key}\"");
+    let at = json.find(pat.as_str())?;
+    let rest = json[at + pat.len()..].trim_start().strip_prefix(':')?.trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+        .unwrap_or(rest.len());
+    rest[..end].parse::<i32>().ok()
+}
+
+/// Разобрать тело `{"tz_min":180}` (смещение от UTC в минутах).
+/// Пустое тело/отсутствие ключа — ошибка: пояс задаётся явно.
+pub fn parse_tz_json(body: &str) -> Result<i16, &'static str> {
+    let minutes = json_int_value(body, "tz_min").ok_or("нет поля tz_min (целое, минуты)")?;
+    crate::time::validate_tz_min(minutes)
+}
+
+#[cfg(test)]
+mod tz_json_tests {
+    use super::*;
+
+    #[test]
+    fn parses_common_forms() {
+        assert_eq!(parse_tz_json("{\"tz_min\":180}"), Ok(180));
+        assert_eq!(parse_tz_json("{ \"tz_min\" : -300 }"), Ok(-300));
+        assert_eq!(parse_tz_json("{\"tz_min\":330}"), Ok(330));
+        assert_eq!(parse_tz_json("{\"tz_min\":0}"), Ok(0));
+    }
+
+    #[test]
+    fn rejects_missing_and_out_of_range() {
+        assert!(parse_tz_json("{}").is_err());
+        assert!(parse_tz_json("{\"tz\":180}").is_err());
+        assert!(parse_tz_json("{\"tz_min\":900}").is_err());
+        assert!(parse_tz_json("{\"tz_min\":-800}").is_err());
+    }
+}

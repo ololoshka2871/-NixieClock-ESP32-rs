@@ -73,8 +73,10 @@ pub struct StatusSnapshot<'a> {
     pub busy: bool,
     pub wifi_ssid: Option<&'a str>,
     pub wifi_saved: bool,
-    /// Форматированное гражданское время UTC (или None, если ещё нет).
+    /// Форматированное локальное время (UTC + смещение пояса; None, если нет).
     pub time: Option<&'a str>,
+    /// Смещение пояса от UTC в минутах (показ; сами часы всегда UTC).
+    pub tz_min: i16,
     pub time_epoch: u64,
     /// Источник текущего времени: build|rtc|ntp|http.
     pub time_source: &'a str,
@@ -130,8 +132,9 @@ impl StatusSnapshot<'_> {
         }
         write!(
             out,
-            ",\"time_epoch\":{},\"time_source\":\"{}\",\"time_synced\":{},\"ota_state\":\"{}\",\"pending\":{},\"confirmed\":{},\"latched\":{},\"busy\":{}",
+            ",\"time_epoch\":{},\"tz_min\":{},\"time_source\":\"{}\",\"time_synced\":{},\"ota_state\":\"{}\",\"pending\":{},\"confirmed\":{},\"latched\":{},\"busy\":{}",
             self.time_epoch,
+            self.tz_min,
             self.time_source,
             self.time_synced,
             self.ota_state,
@@ -268,6 +271,7 @@ mod tests {
             wifi_saved: true,
             time: Some("2026-11-13 12:00:00"),
             time_epoch: 1_763_035_200,
+            tz_min: 180,
             time_source: "ntp",
             time_synced: true,
             ntp_server: Some("192.168.0.28"),
@@ -284,7 +288,7 @@ mod tests {
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100}"
         );
         let s2 = StatusSnapshot {
             ip: None,

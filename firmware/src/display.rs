@@ -388,7 +388,7 @@ fn wanted_samples(mode: u8, epoch: u64, lamp: Option<u8>) -> [u8; 3] {
     match display_core::test_samples_lamp(mode, epoch, lamp) {
         Some(s) => s,
         None => {
-            let c = clock_core::time::epoch_to_civil(epoch);
+            let c = crate::tz::civil(epoch);
             display_core::slot_samples(&display_core::hhmmss_digits(c.hour, c.min, c.sec))
         }
     }

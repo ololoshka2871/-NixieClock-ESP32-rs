@@ -166,6 +166,11 @@ async fn handle<'a>(
                 read_post_body(socket, reqbuf, &mut raw, len).await;
                 handle_time_set(socket, raw.as_slice()).await;
             }
+            "/api/tz" => {
+                let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+                read_post_body(socket, reqbuf, &mut raw, len).await;
+                handle_tz_set(socket, raw.as_slice()).await;
+            }
             "/api/ntp" => {
                 let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
                 read_post_body(socket, reqbuf, &mut raw, len).await;
@@ -176,7 +181,7 @@ async fn handle<'a>(
                     socket,
                     "405 Method Not Allowed",
                     "text/plain",
-                    "POST is accepted on /api/wifi/connect, /api/time and /api/ntp\n",
+                    "POST is accepted on /api/wifi/connect, /api/time, /api/ntp and /api/tz\n",
                 )
                 .await;
             }
@@ -245,6 +250,7 @@ async fn handle<'a>(
                 wifi_ssid: if aw.ssid.is_empty() { None } else { Some(aw.ssid.as_str()) },
                 wifi_saved: aw.from_nvs,
                 time_epoch: epoch,
+                tz_min: crate::tz::get(),
                 time: Some(civil.as_str()),
                 time_source: tsource.as_str(),
                 time_synced: synced,
@@ -510,7 +516,7 @@ async fn handle_time_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
         return;
     }
     crate::clock::sync(epoch, clock_core::time::TimeSource::Http).await;
-    let civil = clock_core::time::epoch_to_civil(epoch);
+    let civil = crate::tz::civil(epoch);
     let mut msg: String<96> = String::new();
     let _ = write!(msg, "{{\"status\":\"set\",\"time\":\"{}\"}}\n", civil);
     respond(socket, "200 OK", "application/json", msg.as_str()).await;
@@ -722,4 +728,40 @@ async fn write_all<'a>(socket: &mut TcpSocket<'a>, mut data: &[u8]) {
             Err(_) => break,
         }
     }
+}
+
+/// POST /api/tz: {"tz_min":180} — смещение от UTC в минутах. Часы и DS1307
+/// продолжают жить в UTC, смещение применяется только при показе (индикация,
+/// WebUI, логи). Ребута не требуется: индикация читает атомик каждый кадр.
+async fn handle_tz_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
+    let text = core::str::from_utf8(raw).unwrap_or("");
+    let minutes = match clock_core::settings::parse_tz_json(text) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("tz: rejected: {}", e);
+            let mut msg: String<96> = String::new();
+            let _ = write!(msg, "{{\"status\":\"error\",\"error\":\"{}\"}}\n", e);
+            respond(socket, "400 Bad Request", "application/json", msg.as_str()).await;
+            return;
+        }
+    };
+    if let Err(e) = crate::settings::save_tz(minutes) {
+        log::error!("tz: NVS save failed: {}", e);
+        respond(socket, "500 Internal Server Error", "text/plain", "nvs write failed\n").await;
+        return;
+    }
+    crate::tz::set(minutes);
+    log::info!(
+        "tz: пояс {:+.2} ч, локальное время {}",
+        minutes as f32 / 60.0,
+        crate::tz::string(crate::clock::epoch_cached())
+    );
+    let mut msg: String<128> = String::new();
+    let _ = write!(
+        msg,
+        "{{\"status\":\"saved\",\"tz_min\":{},\"time\":\"{}\"}}\n",
+        minutes,
+        crate::tz::string(crate::clock::epoch_cached())
+    );
+    respond(socket, "200 OK", "application/json", msg.as_str()).await;
 }

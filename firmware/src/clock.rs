@@ -80,7 +80,7 @@ pub async fn snapshot() -> (u64, String, TimeSource, bool) {
     let epoch = c.now_secs(mono_secs());
     (
         epoch,
-        alloc::format!("{}", time::epoch_to_civil(epoch)),
+        alloc::format!("{}", crate::tz::civil(epoch)),
         c.source(),
         c.synced(),
     )
@@ -97,7 +97,7 @@ pub async fn sync(epoch: u64, source: TimeSource) {
     log::info!(
         "time set from {}: {}",
         source.as_str(),
-        time::epoch_to_civil(epoch)
+        crate::tz::civil(epoch)
     );
 }
 
@@ -144,13 +144,13 @@ pub async fn clock_task(mut i2c: I2c<'static, Async>) {
                 CLOCK.lock().await.set(chip, mono_secs(), TimeSource::Rtc);
                 log::info!(
                     "DS1307 holds time: {} (source: rtc)",
-                    time::epoch_to_civil(chip)
+                    crate::tz::civil(chip)
                 );
             } else {
                 log::warn!(
                     "DS1307 stale ({}): writing build-time {}",
-                    time::epoch_to_civil(chip),
-                    time::epoch_to_civil(build)
+                    crate::tz::civil(chip),
+                    crate::tz::civil(build)
                 );
                 match ds1307_write(&mut i2c, build).await {
                     Ok(()) => CLOCK.lock().await.set(build, mono_secs(), TimeSource::Build),
@@ -175,7 +175,7 @@ pub async fn clock_task(mut i2c: I2c<'static, Async>) {
             match ds1307_write(&mut i2c, epoch).await {
                 Ok(()) => {
                     RTC_SAVE_PENDING.store(false, Ordering::SeqCst);
-                    log::info!("time written to DS1307: {}", time::epoch_to_civil(epoch));
+                    log::info!("time written to DS1307: {}", crate::tz::civil(epoch));
                 }
                 Err(e) => log::warn!("DS1307 save failed ({:?}), retry next cycle", e),
             }
@@ -191,7 +191,7 @@ pub async fn clock_task(mut i2c: I2c<'static, Async>) {
                     log::warn!(
                         "DS1307/model drift {}s: model <- chip ({})",
                         diff,
-                        time::epoch_to_civil(chip)
+                        crate::tz::civil(chip)
                     );
                     c.set(chip, mono_secs(), TimeSource::Rtc);
                 }

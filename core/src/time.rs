@@ -599,3 +599,81 @@ mod tests {
         assert_eq!(alloc::format!("{}", c), "2026-11-03 09:04:05");
     }
 }
+
+// ------------------------------------------------------------ часовой пояс ----
+
+/// Границы смещения от UTC (минуты): UTC-12:00 … UTC+14:00 — как в tzdata,
+/// больше не бывает ни у одного обитаемого пояса.
+pub const TZ_MIN_LIMIT: i32 = -12 * 60;
+pub const TZ_MAX_LIMIT: i32 = 14 * 60;
+/// По умолчанию — Москва (UTC+3): часы должны сразу показывать местное время.
+pub const TZ_DEFAULT_MIN: i16 = 180;
+
+/// Проверка и приведение смещения из настроек/JSON к i16.
+pub fn validate_tz_min(minutes: i32) -> Result<i16, &'static str> {
+    if !(TZ_MIN_LIMIT..=TZ_MAX_LIMIT).contains(&minutes) {
+        return Err("tz: смещение от UTC должно быть в диапазоне -720..=840 минут");
+    }
+    Ok(minutes as i16)
+}
+
+/// Сдвинутая шкала: UTC-эпоха + смещение пояса (может уйти на сутки назад).
+/// Нижняя граница — 0, чтобы не получить отрицательную эпоху на краю.
+pub fn local_epoch(epoch: u64, tz_min: i16) -> u64 {
+    let shifted = epoch as i64 + tz_min as i64 * 60;
+    if shifted < 0 { 0 } else { shifted as u64 }
+}
+
+/// Локальное гражданское время для показа на индикаторе и в UI.
+pub fn local_civil(epoch: u64, tz_min: i16) -> Civil {
+    epoch_to_civil(local_epoch(epoch, tz_min))
+}
+
+#[cfg(test)]
+mod tz_tests {
+    use super::*;
+
+    fn utc(y: i32, mo: u8, d: u8, h: u8, mi: u8) -> u64 {
+        civil_to_epoch(Civil { year: y, month: mo, day: d, hour: h, min: mi, sec: 0 }).expect("civil")
+    }
+
+    #[test]
+    fn moscow_is_three_hours_ahead() {
+        let c = local_civil(utc(2026, 11, 19, 12, 0), 180);
+        assert_eq!((c.year, c.month, c.day, c.hour, c.min), (2026, 11, 19, 15, 0));
+    }
+
+    #[test]
+    fn negative_offset_wraps_to_previous_day() {
+        let c = local_civil(utc(2026, 11, 19, 2, 0), -300);
+        assert_eq!((c.month, c.day, c.hour), (11, 18, 21));
+    }
+
+    #[test]
+    fn positive_offset_wraps_to_next_year() {
+        let c = local_civil(utc(2026, 12, 31, 23, 30), 180);
+        assert_eq!((c.year, c.month, c.day, c.hour, c.min), (2027, 1, 1, 2, 30));
+    }
+
+    #[test]
+    fn half_hour_zones_are_supported() {
+        let c = local_civil(utc(2026, 11, 19, 12, 0), 330); // UTC+5:30
+        assert_eq!((c.hour, c.min), (17, 30));
+    }
+
+    #[test]
+    fn limits_are_enforced() {
+        assert_eq!(validate_tz_min(-720), Ok(-720));
+        assert_eq!(validate_tz_min(840), Ok(840));
+        assert_eq!(validate_tz_min(0), Ok(0));
+        assert!(validate_tz_min(-721).is_err());
+        assert!(validate_tz_min(841).is_err());
+        assert!(validate_tz_min(-20_000).is_err());
+    }
+
+    #[test]
+    fn local_epoch_never_underflows() {
+        assert_eq!(local_epoch(60, -720), 0);
+        assert_eq!(local_epoch(0, 180), 10_800);
+    }
+}
