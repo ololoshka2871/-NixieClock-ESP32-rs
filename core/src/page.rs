@@ -39,9 +39,13 @@ mod tests {
         assert!(page.trim_end().ends_with("</html>"));
         for id in ["uptime", "fw", "ip", "ota_state", "ota_url", "ota_btn", "revert_btn", "logs", "wifi_cur", "wifi_src", "wifi_ssid_in", "wifi_pass_in", "wifi_btn", "wifi_msg",
             "digits", "lamp_sel", "nostrobe", "fade", "d_clock", "d_off", "d_cycle", "d_raw",
-            "st_all", "st_bad", "st_bus", "st_out", "st_msg",
-            "p_boot", "p_bo", "p_rst", "p_bod", "p_min", "p_win", "p_post", "p_disp"] {
+            ] {
             assert!(page.contains(&format!("id=\"{id}\"")), "missing #{id}");
+        }
+        // Разделы «Самопроверка» и «Питание и живучесть» убраны из WebUI:
+        // в странице не должно остаться их элементов.
+        for gone in ["st_all", "st_bad", "st_bus", "p_boot", "p_disp", "p_min"] {
+            assert!(!page.contains(&format!("id=\"{gone}\"")), "stale #{gone} in page");
         }
         // стили и скрипты — отдельными файлами, ничего инлайн
         assert!(page.contains("href=\"/style.css\""), "css link missing");

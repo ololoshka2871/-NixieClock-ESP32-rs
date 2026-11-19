@@ -209,30 +209,53 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
 pub async fn mhz19_task(mut uart: Uart<'static, Async>) {
     // Датчику нужно несколько секунд на прогрев лампы после подачи питания.
     Timer::after_secs(20).await;
+    // Опрос: 10 с после валидного кадра (как DS18x20) и 1 с, пока датчик
+    // молчит — чтобы после пропадания питания/шума связь восстанавливалась
+    // за секунду, а не за минуты.
+    let mut fails: u32 = 0;
     loop {
         hangdetect::beat(&hangdetect::MHZ);
+        let had_failure = fails > 0;
         let cmd = codec::mhz19_command(codec::MHZ19_CMD_READ_PPM, [0, 0, 0, 0]);
-        let result = match uart.write_all(&cmd).await {
-            Ok(()) => read_mhz19_frame(&mut uart).await,
+        let (ok, next) = match uart.write_all(&cmd).await {
+            Ok(()) => match read_mhz19_frame(&mut uart).await {
+                Some(r) => {
+                    if r.status != 0 {
+                        log::warn!("mhz19: status {} (калибровка/ошибка)", r.status);
+                    }
+                    log::info!(
+                        "mhz19: {} ppm, датчик {} C",
+                        r.co2_ppm,
+                        r.sensor_temp_uc / 1_000_000
+                    );
+                    let mut s = SENSORS.lock().await;
+                    s.co2_ppm = Some(r.co2_ppm);
+                    s.co2_temp_mc = Some(r.sensor_temp_uc / 1000);
+                    if had_failure {
+                        log::info!("mhz19: связь восстановлена после {} неудачных опросов", fails);
+                    }
+                    (true, Duration::from_secs(10))
+                }
+                None => {
+                    // Предупреждаем только о первой неудаче: иначе при
+                    // отсутствующем датчике лог получает строку каждую секунду.
+                    if !had_failure {
+                        log::warn!(
+                            "mhz19: нет валидного кадра — повторяю каждую 1 с до восстановления"
+                        );
+                    }
+                    (false, Duration::from_secs(1))
+                }
+            },
             Err(e) => {
-                log::warn!("mhz19: write: {:?}", e);
-                Timer::after_secs(2).await;
-                continue;
+                if !had_failure {
+                    log::warn!("mhz19: write: {:?} — повторяю каждую 1 с", e);
+                }
+                (false, Duration::from_secs(1))
             }
         };
-        match result {
-            Some(r) => {
-                if r.status != 0 {
-                    log::warn!("mhz19: status {} (калибровка/ошибка)", r.status);
-                }
-                log::info!("mhz19: {} ppm, датчик {} C", r.co2_ppm, r.sensor_temp_uc / 1_000_000);
-                let mut s = SENSORS.lock().await;
-                s.co2_ppm = Some(r.co2_ppm);
-                s.co2_temp_mc = Some(r.sensor_temp_uc / 1000);
-            }
-            None => log::warn!("mhz19: нет валидного кадра за 3 с (датчик не отвечает или шум на линии)"),
-        }
-        Timer::after_secs(2).await;
+        fails = if ok { 0 } else { fails.saturating_add(1) };
+        Timer::after(next).await;
     }
 }
 

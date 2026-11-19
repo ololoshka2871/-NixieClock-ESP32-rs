@@ -497,7 +497,7 @@ pub async fn display_task(
     };
     RING_BASE.store(descs_base, Ordering::Relaxed);
 
-    log::info!(
+    log::debug!(
         "display: one looping frame, {} words ({} us, ~{} Hz), {} desc ({} B ON chunks), PWM {} steps/lamp, TG on lanes 8..10",
         FRAME_WORDS,
         FRAME_WORDS as u64 * 787 / 1000,
@@ -513,8 +513,10 @@ pub async fn display_task(
     };
     let par = I2sParallel::new(i2s, dma, Rate::from_hz(SAMPLE_HZ), pins, ws);
 
-    let xfer = match par.send(start) {
-        Ok(xfer) => xfer,
+    let _xfer = match par.send(start) {
+        // Дескриптор нужен только DMA: круговой буфер живёт в статике,
+        // поэтому трансфер не держим (раньше здесь печатался `tx_idle`).
+        Ok(_xfer) => _xfer,
         Err((e, _par, _buf)) => {
             log::error!("display: circular DMA start failed: {:?}", e);
             loop {
@@ -534,7 +536,7 @@ pub async fn display_task(
         Interrupt::I2S1,
         InterruptHandler::new(i2s1_eof_isr, Priority::Priority1),
     );
-    log::info!("display: OUT_EOF armed (frame tick, ISR at Priority1)");
+    log::debug!("display: OUT_EOF armed (frame tick, ISR at Priority1)");
 
     hangdetect::beat(&hangdetect::FRAME);
 
@@ -544,8 +546,10 @@ pub async fn display_task(
     let mut tick: u32 = 0;
     let mut logged = Instant::now();
     let mut logged_ticks = EOF_TICKS.load(Ordering::Relaxed);
-    let mut logged_applied = APPLIED.load(Ordering::Relaxed);
-    let mut logged_requests = REQUESTS.load(Ordering::Relaxed);
+    // Окно диагностики: периодическая строка «display: alive» снята как шум,
+    // предупреждаем только о деградации (см. блок ниже).
+    let mut logged_bad = EOF_BAD_ADDR.load(Ordering::Relaxed);
+    let mut logged_post_to = crate::logger::post_timeouts();
     loop {
         // 5 мс: шаг фейда. Секунда меняется с задержкой не больше одного тика,
         // а анимация успевает ~64 шага на переход.
@@ -595,54 +599,39 @@ pub async fn display_task(
             let now = Instant::now();
             let elapsed_us = (now - logged).as_micros().max(1);
             let ticks = EOF_TICKS.load(Ordering::Relaxed);
-            let applied = APPLIED.load(Ordering::Relaxed);
-            let requests = REQUESTS.load(Ordering::Relaxed);
-            let addr = EOF_DESC.load(Ordering::Relaxed);
             let hz = ticks.wrapping_sub(logged_ticks) as u64 * 1_000_000 / elapsed_us;
-            // desc должен быть ровно +27 (хвостовой дескриптор) каждый кадр.
-            let desc = addr.wrapping_sub(RING_BASE.load(Ordering::Relaxed))
-                / core::mem::size_of::<DmaDescriptor>() as u32;
-            // int_raw/int_ena/state: если тик когда-нибудь «схлопнется», по этим
-            // трём числам видно, виноват лишний источник прерывания (ena),
-            // незакрытый pending (raw) или вставший FIFO (state).
-            let raw = regs.int_raw().read().bits();
-            let ena = regs.int_ena().read().bits();
-            let state = regs.state().read().bits();
-            log::info!(
-                "display: alive, tx_idle={}, eof={} (~{} Hz), desc=+{}, applied={} (+{}), req={} (+{}), bad={}, mode={}, on={}, fade={}, post={}ok/{}to, sending={}, raw={:08x}, ena={:08x}, st={:08x}",
-                xfer.is_done(),
-                ticks,
-                hz,
-                desc,
-                applied,
-                applied.wrapping_sub(logged_applied),
-                requests,
-                requests.wrapping_sub(logged_requests),
-                EOF_BAD_ADDR.load(Ordering::Relaxed),
-                mode,
-                on,
-                animate,
-                crate::logger::post_ok(),
-                crate::logger::post_timeouts(),
-                crate::logger::sending(),
-                raw,
-                ena,
-                state,
-            );
+            let bad = EOF_BAD_ADDR.load(Ordering::Relaxed);
+            let post_to = crate::logger::post_timeouts();
             if ticks == logged_ticks {
-                // За целый интервал (2 с) ни одного EOF: DMA встал или ISR не
+                // За целый интервал ни одного EOF: DMA встал или ISR не
                 // вызывается. Отдельной строкой, чтобы это не потерялось.
                 log::error!(
                     "display: НЕТ ТИКА КАДРА (eof не менялся), int_raw={:08x}, int_ena={:08x}, state={:08x}",
-                    raw,
-                    ena,
-                    state,
+                    regs.int_raw().read().bits(),
+                    regs.int_ena().read().bits(),
+                    regs.state().read().bits(),
+                );
+            } else if bad != logged_bad || post_to != logged_post_to {
+                // Пишем только при деградации: битые адреса DMA (ISR получил
+                // мусорный EOF) или таймауты отправки логов.
+                log::warn!(
+                    "display: degraded (~{} Hz), bad_addr={} (+{}), post_timeouts={} (+{}), post_ok={}, sending={}, mode={}, on={}, fade={}",
+                    hz,
+                    bad,
+                    bad.wrapping_sub(logged_bad),
+                    post_to,
+                    post_to.wrapping_sub(logged_post_to),
+                    crate::logger::post_ok(),
+                    crate::logger::sending(),
+                    mode,
+                    on,
+                    animate,
                 );
             }
             logged = now;
             logged_ticks = ticks;
-            logged_applied = applied;
-            logged_requests = requests;
+            logged_bad = bad;
+            logged_post_to = post_to;
         }
     }
 }

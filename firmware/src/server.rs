@@ -386,8 +386,22 @@ async fn handle<'a>(
             let mut url: String<256> = String::new();
             for pair in query.split('&') {
                 if let Some(v) = pair.strip_prefix("url=") {
-                    url.clear();
-                    let _ = url.push_str(v);
+                    // Страница шлёт URL через encodeURIComponent: без
+                    // percent-decode сервер видел "http%3A%2F%2Fhost..." и
+                    // отвечал usage вместо запроса OTA.
+                    let mut dec = [0u8; 256];
+                    match clock_core::urlenc::percent_decode_into(v.as_bytes(), &mut dec) {
+                        Some(n) => match core::str::from_utf8(&dec[..n]) {
+                            Ok(s) => {
+                                url.clear();
+                                let _ = url.push_str(s);
+                            }
+                            Err(_) => log::warn!("/ota: url не в UTF-8"),
+                        },
+                        None => log::warn!(
+                            "/ota: url не декодируется (длина > 255 или битый %XX)"
+                        ),
+                    }
                 }
             }
             if url.is_empty() || !url.starts_with("http://") {

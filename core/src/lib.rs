@@ -57,6 +57,7 @@ pub mod page;
 pub mod sensors;
 pub mod settings;
 pub mod time;
+pub mod urlenc;
 
 /// Снимок состояния для JSON `/api/status` (SPA-подложка). Формируется в
 /// firmware, сериализуется здесь — формат тестируется на хосте.
