@@ -367,6 +367,13 @@ pub async fn adc_task(
                     crate::power::note_v33(v33);
                     let min33mv = rail(min33, codec::RATIO_3V3_X1000).unwrap_or(0);
                     crate::power::set_window(v33, min33mv, low33, n33);
+                    #[cfg(feature = "display")]
+                    let (mode, lamp) = (
+                        crate::display::TEST_MODE.load(core::sync::atomic::Ordering::Relaxed),
+                        crate::display::TEST_LAMP.load(core::sync::atomic::Ordering::Relaxed),
+                    );
+                    #[cfg(not(feature = "display"))]
+                    let (mode, lamp) = (0u8, 6u8);
                     log::warn!(
                         "adc: под нагрузкой (1 с): 3v3 avg={} min={} low={}/{}; 5v avg={}; 12v avg={} min={} max={} [mode={} lamp={}]",
                         v33,
@@ -377,8 +384,8 @@ pub async fn adc_task(
                         v12,
                         rail(min12, codec::RATIO_12V_X1000).unwrap_or(0),
                         codec::pin_mv_to_rail_mv(max12, codec::RATIO_12V_X1000),
-                        crate::display::TEST_MODE.load(core::sync::atomic::Ordering::Relaxed),
-                        crate::display::TEST_LAMP.load(core::sync::atomic::Ordering::Relaxed),
+                        mode,
+                        lamp,
                     )
                 }
                 _ => log::warn!("adc: под нагрузкой: часть каналов не читается"),

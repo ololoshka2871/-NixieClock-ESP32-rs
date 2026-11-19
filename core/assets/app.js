@@ -106,6 +106,10 @@ $("d_clock").onclick = async () => {
 $("d_off").onclick = async () => { dMsg.textContent = (await getText("/display/off")).trim(); pollDiag() };
 $("d_cycle").onclick = async () => { dMsg.textContent = (await getText("/display/test?cycle=1&lamp=6")).trim(); pollDiag() };
 $("d_raw").onclick = async () => { dMsg.textContent = (await getText("/display/test?rawcycle=1&lamp=6")).trim(); pollDiag() };
+$("fade").onchange = async e => {
+    dMsg.textContent = (await getText("/display/fade?on=" + (e.target.checked ? 1 : 0))).trim();
+    pollDiag();
+};
 
 async function selfTest(list, nostrobe) {
     const out = $("st_out"), msg = $("st_msg");
@@ -160,9 +164,19 @@ async function pollDiag() {
         ? "avg " + v(s.win33_avg) + " · мин " + v(s.win33_min) + " · ниже 3 В " + s.win33_low + "/" + s.win33_n
         : "нет (меряется в тест-режиме)";
     $("p_post").textContent = (s.post_ok || "0") + " ok · " + (s.post_timeouts || "0") + " таймаутов";
+    // Яркость во время фейда: 128 = 100%, 0 = погашена.
+    const lampNames = ["Ч1", "Ч2", "М1", "М2", "С1", "С2"];
+    const duties = lampNames.map((n, i) => {
+        const d = s["display_duty" + i];
+        return n + " " + (d == null ? "?" : Math.round(+d * 100 / 128) + "%");
+    }).join(" · ");
     $("p_disp").textContent = "mode " + (s.display_mode || "0") +
         " · лампа " + (s.display_lamp === "6" ? "все" : (s.display_lamp || "?")) +
-        (on(s.display_on) ? " · вкл" : " · ВЫКЛ") + (on(s.nostrobe) ? " · без строба" : "");
+        (on(s.display_on) ? " · вкл" : " · ВЫКЛ") +
+        (on(s.display_fade) ? " · fade" : " · без fade") +
+        (on(s.nostrobe) ? " · без строба" : "") +
+        " · ярк: " + duties;
+    if (document.activeElement !== $("fade")) $("fade").checked = on(s.display_fade);
 }
 pollDiag();
 setInterval(pollDiag, 3000);

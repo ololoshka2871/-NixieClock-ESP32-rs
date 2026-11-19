@@ -138,7 +138,7 @@ async fn handle<'a>(
             "/status" => crate::rtcmark::H_STATUS,
             "/logs" | "/api/logs" => crate::rtcmark::H_LOGS,
             "/display/test" => crate::rtcmark::H_TEST,
-            "/display/off" | "/display/on" => crate::rtcmark::H_ONOFF,
+            "/display/off" | "/display/on" | "/display/fade" => crate::rtcmark::H_ONOFF,
             "/ota" => crate::rtcmark::H_OTA,
             "/revert" => crate::rtcmark::H_REVERT,
             _ => crate::rtcmark::H_OTHER,
@@ -268,7 +268,7 @@ async fn handle<'a>(
             respond(socket, "200 OK", "text/plain; charset=utf-8", body.as_str()).await;
         }
         #[cfg(not(feature = "display"))]
-        "/display/test" | "/display/off" | "/display/on" => {
+        "/display/test" | "/display/off" | "/display/on" | "/display/fade" => {
             respond(socket, "200 OK", "text/plain", "display disabled in this build\n").await;
         }
         #[cfg(feature = "display")]
@@ -347,6 +347,24 @@ async fn handle<'a>(
             let on = path == "/display/on";
             crate::display::DISPLAY_ON.store(on, core::sync::atomic::Ordering::Relaxed);
             respond(socket, "200 OK", "text/plain", if on { "display on\n" } else { "display off\n" }).await;
+        }
+        #[cfg(feature = "display")]
+        "/display/fade" => {
+            // ?on=0 — мгновенная смена цифр, ?on=1 — плавный фейд.
+            // Без параметра — переключить (удобно из curl).
+            let mut on = !crate::display::FADE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
+            for kv in query.split('&') {
+                if let Some(("on" | "fade", v)) = kv.split_once('=') {
+                    on = v.parse::<u8>().unwrap_or(0) != 0;
+                }
+            }
+            crate::display::FADE_ENABLED.store(on, core::sync::atomic::Ordering::Relaxed);
+            let msg = if on {
+                "display fade on (linear down to 0, then up with the new digit)\n"
+            } else {
+                "display fade off (instant digit change)\n"
+            };
+            respond(socket, "200 OK", "text/plain", msg).await;
         }
         "/logs" | "/api/logs" => {
             logger::dump_into(body);
@@ -645,14 +663,24 @@ fn status_body(body: &mut String<4096>) {
     );
     #[cfg(feature = "display")]
     {
-        use crate::display::{DISPLAY_ON, NO_STROBE, TEST_LAMP, TEST_MODE};
+        use crate::display::{DISPLAY_ON, FADE_ENABLED, NO_STROBE, TEST_LAMP, TEST_MODE};
+        let d = crate::display::lamp_duties();
         let _ = write!(
             body,
-            "display_mode={}\ndisplay_lamp={}\ndisplay_on={}\nnostrobe={}\n",
+            "display_mode={}\ndisplay_lamp={}\ndisplay_on={}\nnostrobe={}\ndisplay_fade={}\n\
+             display_duty0={}\ndisplay_duty1={}\ndisplay_duty2={}\n\
+             display_duty3={}\ndisplay_duty4={}\ndisplay_duty5={}\n",
             TEST_MODE.load(Ordering::Relaxed),
             TEST_LAMP.load(Ordering::Relaxed),
             DISPLAY_ON.load(Ordering::Relaxed),
             NO_STROBE.load(Ordering::Relaxed),
+            FADE_ENABLED.load(Ordering::Relaxed),
+            d[0],
+            d[1],
+            d[2],
+            d[3],
+            d[4],
+            d[5],
         );
     }
 }

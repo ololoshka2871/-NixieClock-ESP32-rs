@@ -38,7 +38,7 @@ mod tests {
         assert!(page.starts_with("<!DOCTYPE html>"));
         assert!(page.trim_end().ends_with("</html>"));
         for id in ["uptime", "fw", "ip", "ota_state", "ota_url", "ota_btn", "revert_btn", "logs", "wifi_cur", "wifi_src", "wifi_ssid_in", "wifi_pass_in", "wifi_btn", "wifi_msg",
-            "digits", "lamp_sel", "nostrobe", "d_clock", "d_off", "d_cycle", "d_raw",
+            "digits", "lamp_sel", "nostrobe", "fade", "d_clock", "d_off", "d_cycle", "d_raw",
             "st_all", "st_bad", "st_bus", "st_out", "st_msg",
             "p_boot", "p_bo", "p_rst", "p_bod", "p_min", "p_win", "p_post", "p_disp"] {
             assert!(page.contains(&format!("id=\"{id}\"")), "missing #{id}");
@@ -54,7 +54,7 @@ mod tests {
     #[test]
     fn app_js_uses_our_endpoints() {
         let js = gunzip(JS_GZ);
-        for ep in ["/api/status", "/ota?url=", "/revert", "/logs", "/api/wifi/connect", "/display/test?", "/display/on", "/display/off", "/status"] {
+        for ep in ["/api/status", "/ota?url=", "/revert", "/logs", "/api/wifi/connect", "/display/test?", "/display/on", "/display/off", "/display/fade?", "/status"] {
             assert!(js.contains(ep), "missing endpoint {ep}");
         }
         // относительные fetch -> страница работает с любого адреса платы
