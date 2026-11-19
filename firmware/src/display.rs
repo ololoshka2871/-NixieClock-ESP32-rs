@@ -1,283 +1,531 @@
-//! Indication M5: I2S1 parallel 8-bit + DMA, CPU only at chunk boundaries.
+//! Индикация: I2S1 16-bit parallel + DMA-кольцо, один кадр в железе и
+//! атомарная подмена цифр по тику кадра.
 //!
-//! Bus layout matches the original IDF project exactly (main/Nixie.cpp):
-//! lane order D1A..D4A,D1B..D4B = GPIO 27/26/25/33, 32/12/18/19 (D2B is
-//! GPIO12 on this board — a physical jumper pins D2B to GPIO12, confirmed
-//! by scope 2026-11-16; the original IDF firmware drove GPIO12 too. The
-//! strap only matters at reset where the TTL decoder input is Hi-Z).
-//! Byte sample bits 0..3 = bus A code, bits 4..7 = bus B code (ic74141
-//! encoder output). TG strobes are plain outputs (active HIGH).
+//! Раскладка шин: lanes 0..7 — восемь шин ламп (DATA_8..15,
+//! GPIO27/26/25/33/32/12/18/19), lanes 8..10 — TG0/TG1/TG2 (DATA_16..18,
+//! GPIO13/2/14), lanes 11..15 — NoPin. В 16-битном слове биты 0..7 — коды
+//! дешифраторов, биты 8..10 — стробы слотов.
 //!
-//! Why strobes are not I2S lanes: 16-bit parallel mode needs 16 data lanes
-//! + a write-strobe; the board only has 11 signal GPIOs and every remaining
-//! free GPIO is already earmarked (button, NeoPixel, SQW, console). 8-bit
-//! mode on I2S1 uses exactly the 8 bus GPIOs plus write-strobe GPIO3.
+//! Почему один кадр, а не N целых кадров. Кадр = 3 слота (по 1056 слов) +
+//! 32 слова тьмы = 3200 слов (2.52 мс, ~397 Гц). Если держать в кольце
+//! 3 полных кадра, то обновлять их можно только по одному (пока DMA читает
+//! один, остальные свободны), и на время обновления дисплей показывал бы
+//! смесь старых и новых цифр. Вместо этого окно строба собрано из 8
+//! дескрипторов по 128 слов, которые смотрят в один и тот же маленький
+//! буфер слота (256 B). Тогда:
 //!
-//! Race-free scheme without any strobe lane: every slot transfer ends with a
-//! BLANK run (both decoders code 10 -> no output at all), and TG pins are
-//! only rewritten during a fully dark window. A strobe write can therefore
-//! never illuminate a wrong digit, whatever the CPU latency between chunks.
-//! Slot length is held by DMA itself (1056 bytes at 1.27 MHz = ~831 us per
-//! slot, ~400 Hz refresh like the original); WiFi load can only lengthen the
-//! dark gap between chunks, never glitch a digit.
+//!   * кадр один и крутится вечно: dark(32) + ON(8x128) + dark(32) + ... +
+//!     tail-dark(32), 28 дескрипторов;
+//!   * цифры живут в трёх буферах по 256 B (slot 0..2), а не в 6.4 KB;
+//!   * ISR на `OUT_EOF` (конец tail-dark) получает готовые семплы и
+//!     переписывает только изменившиеся буферы — обычно один слот, 64
+//!     u32-записи, ~1-2 мкс. До первого ON-слова следующего кадра остаётся
+//!     32 слова тьмы (25 мкс), но slot 0 обычно не меняется, а slot 2
+//!     (секунды) читается через ~1.7 мс — запас огромный;
+//!   * кадр всегда целостный: старый и новый кадр не смешиваются никогда,
+//!     потому что подмена идёт на границе кадра, а не посреди него.
+//!
+//! Память: в `.bss` ~1.2 KB вместо 19 KB (стек main-задачи был 30 KB, станет
+//! ~48 KB). Линкер кладёт `_stack_end` сразу после `.bss`, так что каждый
+//! килобайт статики = килобайт стека.
+//!
+//! Замерено: слово = 787 нс (1.27 Мслов/с, делитель 160 МГц / 2.54 МГц = 63 —
+//! минимум для 6-битного поля). Отсюда слот 1056 слов = 831.5 мкс (строб
+//! 1024 слова = 806 мкс), кадр 3200 слов = 2519.7 мкс = 396.9 Гц.
+//!
+//! Оригинальная 8-битная реализация сохранена рядом: `display.rs.bak`.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use embassy_executor::Spawner;
 
-use crate::hangdetect;
+use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
-use esp_hal::i2s::parallel::{I2sParallel, TxEightBits};
+
+use esp_hal::dma::{BurstConfig, DmaDescriptor, DmaTxBuffer, Preparation};
+use esp_hal::gpio::NoPin;
+use esp_hal::i2s::parallel::{I2sParallel, TxSixteenBits};
+use esp_hal::interrupt::{InterruptHandler, Priority, bind_handler};
+use esp_hal::peripherals;
+use esp_hal::peripherals::Interrupt;
 use esp_hal::time::Rate;
-use esp_hal::{
-    dma::DmaTxBuf,
-    dma_tx_buffer,
-    gpio::{Level, Output, OutputConfig},
-    peripherals,
-};
 
 use clock_core::display as display_core;
 
-use crate::clock;
+use crate::{clock, hangdetect};
 
-/// Byte rate on the bus: 1.27 MHz -> 787 ns per byte (probe FINDINGS).
+/// Частота, которую получает драйвер. Для 16-bit режима esp-hal считает
+/// mclk = 2 * SAMPLE_HZ, bck_div = 1; при 1.27 МГц делитель упирается в
+/// максимум 63 (минимум частоты, который вообще можно выставить на ESP32).
+/// Замер: одно 16-битное слово = 787 нс.
 const SAMPLE_HZ: u32 = 1_270_000;
-/// Digit bytes per slot: 1056 * 787 ns = ~831 us -> 400 Hz refresh.
-const SLOT_BYTES: usize = 1056;
-/// Forced dark gap after every slot (both decoders blanked). Multiples of 4
-/// because the 8-bit DMA interleave works on 4-byte groups.
-const BLANK_BYTES: usize = 32;
 
-/// Тест-режим индикации (диагностика M5.1): ставится сервером через
-/// /display/test, читается display_task каждый кадр. Семантика —
-/// clock_core::display::test_samples (0 = выключен).
+/// Слово = 16 бит. Биты 0..7 — коды ламп, 8..10 — TG0/TG1/TG2.
+const TG_SHIFT: u16 = 8;
+
+/// Тёмная пауза перед слотом и в конце кадра. 32 слова = 25.2 мкс.
+const DARK_WORDS: usize = 32;
+/// Тёмное слово: оба дешифратора в гашении (код 10 = 0xA), все TG = 0.
+///
+/// Раскладка 16-битного слова: биты 0..3 — код шины A, 4..7 — код шины B,
+/// **8..10 — TG0/TG1/TG2**, 11..15 — NoPin. Значит гашение это
+/// `0x00AA` (0xA в каждом ниббле, старший байт нулевой).
+///
+/// Здесь стояло `0x0A0A` — и это была ошибка: `0x0A` в старшем байте
+/// занимает биты 8..15, то есть поднимала **бит 9 (TG1)** и обнуляла код
+/// шины B. Осциллограф это и показал: TG1 высокий всю тёмную паузу
+/// (25 мкс перед слотом, 50 мкс на границе кадра), а на лампах слота 1
+/// в это время висел код 0 («9») с яркостью ~1%. Было ещё `0xAAAA` —
+/// там коды верные, но бит 9 тоже поднят.
+const DARK_WORD_U32: u32 = 0x00AA_00AA;
+/// Компиляторная страховка: в тёмном слове не должно быть ни одного строба
+/// (биты 8..10 в каждой половине) и оба ниббла должны быть кодом гашения.
+const _: () = assert!(DARK_WORD_U32 & 0x0700_0700 == 0, "TG в тёмном слове!");
+const _: () = assert!(
+    DARK_WORD_U32 & 0x00FF == 0x00AA && DARK_WORD_U32 >> 16 & 0x00FF == 0x00AA,
+    "код гашения в тёмном слове!"
+);
+/// Окно строба: 1024 слова = 806 мкс.
+const ON_WORDS: usize = 1024;
+/// Один дескриптор окна = 128 слов (256 B). Восемь таких дескрипторов
+/// смотрят в один буфер слота — так цифры занимают 256 B вместо 2 KB.
+const ON_CHUNK_WORDS: usize = 128;
+const ON_CHUNKS: usize = ON_WORDS / ON_CHUNK_WORDS; // 8
+
+const SLOT_WORDS: usize = DARK_WORDS + ON_WORDS; // 1056
+const FRAME_WORDS: usize = SLOT_WORDS * 3 + DARK_WORDS; // 3200
+
+/// DMA пересылает 32-битные посылки (два 16-битных слова в каждой).
+const DARK_U32: usize = DARK_WORDS / 2; // 16
+const ON_U32: usize = ON_CHUNK_WORDS / 2; // 64
+
+const DARK_BYTES: usize = DARK_WORDS * 2; // 64 B
+const ON_BYTES: usize = ON_CHUNK_WORDS * 2; // 256 B
+
+/// На слот: один dark-дескриптор + 8 ON-дескрипторов; плюс хвостовой dark.
+const DESC_PER_SLOT: usize = 1 + ON_CHUNKS; // 9
+const DESC_COUNT: usize = DESC_PER_SLOT * 3 + 1; // 28
+
+/// Стендовые тумблеры (эндпоинты /display/*).
 pub static TEST_MODE: AtomicU8 = AtomicU8::new(0);
-/// Стендовый тумблер: /display/off останавливает всю индикацию (DMA/TG молчат),
-/// полезный для бисекции крашей; /display/on возобновляет.
+/// Маска теста: 0..5 — показывать цифру только на этой лампе, 6 — на всех.
+pub static TEST_LAMP: AtomicU8 = AtomicU8::new(6);
+/// Тестовый режим «только шина»: коды идут, стробы TG закрыты (лампы тёмные).
+pub static NO_STROBE: AtomicBool = AtomicBool::new(false);
+/// Индикация включена по умолчанию: после бута сразу показываем время.
+/// `/display/off` гасит лампы (и `/display/test?...` включает обратно),
+/// `/display/test?off=1` возвращает часы.
 pub static DISPLAY_ON: AtomicBool = AtomicBool::new(true);
-/// Стендовый тумблер: noblank=1 убирает blank-паузу (данные ламп постоянно
-/// на всех 8 линиях между слотами) — удобно смотреть осциллом.
+/// Оставлен для совместимости API: в новой схеме «пустых» чанков нет,
+/// тьма между слотами зашита в сами дескрипторы.
 pub static NO_BLANK: AtomicBool = AtomicBool::new(false);
 
-/// Rebuild the peripheral pair after a wedged transfer. Only reachable when
-/// the classic-ESP32 I2S flags lied to us: the dropped transfer's Drop has
-/// already stopped I2S and the DMA channel, so re-taking the (stateless ZST)
-/// peripheral handles via steal() is a clean restart of the data path. TG
-/// outputs live in the task and are never part of this rebuild.
-static REBUILDS: AtomicU32 = AtomicU32::new(0);
+// ---------------- заявка на новые цифры ----------------
+//
+// Задача готовит семплы и одной 32-битной записью публикует заявку.
+// ISR забирает её на границе кадра (`OUT_EOF`) и переписывает буферы слотов.
+// Поля: биты 0..7 / 8..15 / 16..23 — семплы слотов 0/1/2 (код A | код B << 4);
+// REQ_VALID — заявка есть; REQ_OFF — погасить все стробы.
+const REQ_VALID: u32 = 1 << 31;
+const REQ_OFF: u32 = 1 << 30;
+/// Гнать коды по шине, но не открывать стробы (лампы тёмные). Бисект:
+/// если плата «складывается» и в этом режиме — виноваты линии шины/входы
+/// дешифратора; если нет — цепь катодов/лампы.
+const REQ_NOSTROBE: u32 = 1 << 29;
+const REQ_MASK: u32 = 0x00FF_FFFF;
 
-fn rebuild(
-    par: &mut Option<I2sParallel<'static, esp_hal::Async>>,
-    buf: &mut Option<DmaTxBuf>,
-) {
-    let n = REBUILDS.fetch_add(1, Ordering::Relaxed) + 1;
-    log::warn!("display: rebuilding I2S+DMA (#{n})");
-    if n >= 20 {
-        // 20 пересозданий — не разовая наводка, а залипание периферии: карантин
-        // индикации, чтобы плата оставалась живой и диагностируемой.
-        log::error!("display: карантин — индикация выключена после {n} rebuild (оживляется /display или рестартом)");
-        DISPLAY_ON.store(false, Ordering::Relaxed);
-    }
-    // esp_hal::Peripherals re-export is private; the macro-generated struct
-    // lives in esp_hal::peripherals and steal() is unsafe by design (we only
-    // rebuild after the previous transfer's Drop has stopped the peripherals).
-    let p = unsafe { esp_hal::peripherals::Peripherals::steal() };
-    let pins = TxEightBits::new(
-        p.GPIO27, p.GPIO26, p.GPIO25, p.GPIO33, p.GPIO32, p.GPIO12, p.GPIO18, p.GPIO19,
-    );
-    *par = Some(
-        I2sParallel::new(p.I2S1, p.DMA_I2S1, Rate::from_hz(SAMPLE_HZ), pins, p.GPIO3).into_async(),
-    );
-    *buf = Some(dma_tx_buffer!(SLOT_BYTES + BLANK_BYTES).unwrap());
+/// Последние применённые семплы (24 бита) или LAST_OFF, когда дисплей погашен.
+const LAST_OFF: u32 = 1 << 24;
+
+static REQUEST: AtomicU32 = AtomicU32::new(0);
+static LAST_SAMPLES: AtomicU32 = AtomicU32::new(LAST_OFF);
+/// Открыты ли стробы в текущем содержимом буферов (для «только шина»).
+static STROBE_ON: AtomicBool = AtomicBool::new(true);
+
+// ---------------- диагностика ----------------
+static EOF_TICKS: AtomicU32 = AtomicU32::new(0);
+static EOF_DESC: AtomicU32 = AtomicU32::new(0);
+static RING_BASE: AtomicU32 = AtomicU32::new(0);
+static EOF_BAD_ADDR: AtomicU32 = AtomicU32::new(0);
+static APPLIED: AtomicU32 = AtomicU32::new(0);
+static REQUESTS: AtomicU32 = AtomicU32::new(0);
+
+/// Кольцо DMA: дескрипторы + маленькие буферы слотов. Живёт в .bss сразу,
+/// без `StaticCell::init(Ring::new())`: `init` принимает значение по значению,
+/// и временный `Ring` строился бы на стеке задачи.
+struct Ring {
+    descs: [DmaDescriptor; DESC_COUNT],
+    /// Общий буфер всех тёмных промежутков (4 дескриптора).
+    dark: [u32; DARK_U32],
+    /// Буфер окна строба на каждый слот: все 1024 слова одинаковые.
+    on: [[u32; ON_U32]; 3],
 }
 
-async fn send_chunk(
-    par: &mut Option<I2sParallel<'static, esp_hal::Async>>,
-    buf: &mut Option<DmaTxBuf>,
-    byte: u8,
-    len: usize,
-    errs: &mut u32,
-) {
-    let (Some(p), Some(mut b)) = (par.take(), buf.take()) else {
-        *errs += 1;
-        rebuild(par, buf);
-        return;
-    };
-    {
-        let s = b.as_mut_slice();
-        let (head, _) = s.split_at_mut(len);
-        head.fill(byte);
+impl Ring {
+    const fn new() -> Self {
+        Self {
+            descs: [DmaDescriptor::EMPTY; DESC_COUNT],
+            dark: [DARK_WORD_U32; DARK_U32],
+            on: [[DARK_WORD_U32; ON_U32]; 3],
+        }
     }
-    // tx_start() внутри send() в esp-hal 1.2.2 содержит безлимитные спины по
-    // флагам I2S (while !tx_rempty / while tx_idle) — при залипании периферии
-    // от наводок индикации именно тут исполнитель вешает всю плату. Фаза 1 в
-    // снимке hang-detect = зависание внутри send().
-    hangdetect::set_phase(&hangdetect::PHASE_DISP, 1);
-    match p.send(b) {
-        Ok(mut xfer) => {
-            hangdetect::set_phase(&hangdetect::PHASE_DISP, 2); // DMA взведён
-            hangdetect::beat(&hangdetect::FRAME);
-            hangdetect::set_phase(&hangdetect::PHASE_DISP, 3); // ждём event done
-            let mut done = match xfer.wait_for_done().await {
-                Ok(()) => true,
-                Err(e) => {
-                    *errs += 1;
-                    log::warn!("display DMA error: {:?}", e);
-                    false
+
+    /// Раскладывает дескрипторы: dark, 8xON, dark, 8xON, dark, 8xON, tail.
+    /// `suc_eof` — только на хвостовом: один тик на кадр.
+    fn build(&mut self) {
+        let base = self.descs.as_mut_ptr();
+        let dark = self.dark.as_mut_ptr().cast::<u8>();
+        for i in 0..DESC_COUNT {
+            let (buf, size, eof) = if i == DESC_COUNT - 1 {
+                (dark, DARK_BYTES, true)
+            } else {
+                let slot = i / DESC_PER_SLOT;
+                let part = i % DESC_PER_SLOT;
+                if part == 0 {
+                    (dark, DARK_BYTES, false)
+                } else {
+                    (self.on[slot].as_mut_ptr().cast::<u8>(), ON_BYTES, false)
                 }
             };
-            // esp-hal 1.2.2 `wait()` busy-spins `while !tx_idle` (i2s/parallel.rs
-            // tx_wait_done). The classic ESP32 tx_idle flag is the documented
-            // flaky one: when it misses, that spin starves the embassy
-            // executor, the RWDT bites in 30 s and the board reboots — the
-            // exact crash loop seen on v0.6.0. So: poll the same flag through
-            // a *cooperative* Timer first (bounded, always yields), and only
-            // then call wait(), which will return at once. If the flag is
-            // stuck, never enter the spin: drop (stops peripherals cleanly)
-            // and rebuild.
-            if done {
-                hangdetect::set_phase(&hangdetect::PHASE_DISP, 4); // кооперативный опрос tx_idle
-                let mut ticks = 0u32;
-                while !xfer.is_done() && ticks < 400 {
-                    Timer::after_micros(250).await;
-                    ticks += 1;
-                }
-                done = xfer.is_done();
-            }
-            if done {
-                hangdetect::set_phase(&hangdetect::PHASE_DISP, 5); // wait() должен вернуться сразу
-                let (p2, b2) = xfer.wait();
-                *par = Some(p2);
-                *buf = Some(b2);
-            } else {
-                *errs += 1;
-                log::warn!("display: tx_idle stuck after transfer, rebuilding I2S");
-                drop(xfer);
-                rebuild(par, buf);
+            // Сырые указатели: собрать кольцо через &mut заимствования нельзя.
+            let next = unsafe { base.add((i + 1) % DESC_COUNT) };
+            let d = unsafe { &mut *base.add(i) };
+            d.reset_for_tx(eof); // owner = DMA
+            d.set_size(size);
+            d.set_length(size);
+            d.buffer = buf;
+            d.next = next;
+        }
+    }
+
+    /// Заполняет буфер слота одним и тем же словом: код ламп + строб слота.
+    /// `inline(always)` обязательно: метод вызывается из ISR, а ISR живёт в
+    /// `.rwtext` (IRAM); отдельная копия в flash не переживёт запись OTA.
+    /// Запись через `write_volatile` в цикле, а не `fill`: никакого вызова
+    /// ROM-memset из прерывания, ровно 64 32-битных store, ~1 мкс.
+    #[inline(always)]
+    fn set_slot(&mut self, slot: usize, sample: u8, strobe: bool) {
+        let word = if strobe {
+            sample as u16 | (1 << (TG_SHIFT as usize + slot))
+        } else {
+            // «Только шина»: коды на месте, строб закрыт — ток через лампы не идёт.
+            sample as u16
+        } as u32;
+        let w = word | (word << 16);
+        for cell in self.on[slot].iter_mut() {
+            unsafe { core::ptr::write_volatile(cell, w) };
+        }
+    }
+
+    /// Полностью погасить все стробы (данные при этом не важны).
+    #[inline(always)]
+    fn blank_all(&mut self) {
+        for block in &mut self.on {
+            for cell in block.iter_mut() {
+                unsafe { core::ptr::write_volatile(cell, DARK_WORD_U32) };
             }
         }
-        Err((e, p2, b2)) => {
-            *errs += 1;
-            log::warn!("display DMA send failed: {:?}", e);
-            *par = Some(p2);
-            *buf = Some(b2);
-            // Never hot-loop a failing send(): keep the executor fed so the
-            // watchdog task, HTTP and radios stay alive even if I2S is dead.
-            Timer::after_millis(20).await;
+    }
+
+    fn start(&mut self) -> RingStart {
+        RingStart {
+            start: self.descs.as_mut_ptr(),
         }
     }
 }
 
-/// HHMMSS on six IN-14 lamps via 3 multiplexed slots, DMA-driven.
-#[allow(clippy::too_many_arguments)]
+/// Кольцо в .bss сразу: доступ только из задачи при старте и из ISR по
+/// границе кадра. Ссылка из задачи живёт только до `send()`.
+static mut RING: Ring = Ring::new();
+
+/// Тик кадра по `OUT_EOF`: читает `OUT_EOF_DES_ADDR`, обновляет счётчики и,
+/// если есть заявка, переписывает буферы слотов ДО начала следующего кадра.
+///
+/// Почему это безопасно: `suc_eof` стоит на хвостовом dark-дескрипторе, так
+/// что ISR просыпается ровно на границе кадра. DMA в этот момент начинает
+/// 32 слова тьмы перед slot 0; буферы слотов никто не читает.
+/// `.rwtext` = IRAM: тик идёт и во время записи flash (OTA), когда кэш выключен.
+#[unsafe(link_section = ".rwtext")]
+extern "C" fn i2s1_eof_isr() {
+    let regs = unsafe { &*esp32::I2S1::ptr() };
+    if !regs.int_raw().read().out_eof().bit_is_set() {
+        return;
+    }
+    // Адрес читаем до очистки флага — он относится именно к этому событию.
+    let addr = regs.out_eof_des_addr().read().bits();
+    let off = addr.wrapping_sub(RING_BASE.load(Ordering::Relaxed)) as usize;
+    if off >= DESC_COUNT * core::mem::size_of::<DmaDescriptor>() {
+        EOF_BAD_ADDR.fetch_add(1, Ordering::Relaxed);
+    }
+    EOF_DESC.store(addr, Ordering::Relaxed);
+    EOF_TICKS.fetch_add(1, Ordering::Relaxed);
+
+    let req = REQUEST.swap(0, Ordering::Acquire);
+    if req & REQ_VALID != 0 {
+        let ring = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
+        let strobe = req & REQ_NOSTROBE == 0;
+        let new = if req & REQ_OFF != 0 {
+            LAST_OFF
+        } else {
+            req & REQ_MASK
+        };
+        let old = LAST_SAMPLES.load(Ordering::Relaxed);
+        // Переключение «только шина» меняет содержимое буферов, хотя семплы
+        // те же — поэтому это отдельный повод переписать слоты.
+        let strobe_changed = STROBE_ON.load(Ordering::Relaxed) != strobe;
+        if new != old || strobe_changed {
+            STROBE_ON.store(strobe, Ordering::Relaxed);
+            if new == LAST_OFF {
+                ring.blank_all();
+            } else {
+                // slot 0 пишем первым: до его окна остаётся меньше всего
+                // времени; остальные слоты читаются на ~0.85/1.7 мс позже.
+                for slot in 0..3 {
+                    let ns = (new >> (8 * slot)) & 0xFF;
+                    let os = (old >> (8 * slot)) & 0xFF;
+                    // после выключения восстанавливаем все слоты
+                    if strobe_changed || old == LAST_OFF || ns != os {
+                        ring.set_slot(slot, ns as u8, strobe);
+                    }
+                }
+            }
+            LAST_SAMPLES.store(new, Ordering::Relaxed);
+            APPLIED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    regs.int_clr().write(|w| w.out_eof().clear_bit_by_one());
+}
+
+/// Обёртка для `I2sParallel::send`: сам буфер остаётся в статике, сюда кладём
+/// только указатель на голову кольца.
+struct RingStart {
+    start: *mut DmaDescriptor,
+}
+
+// SAFETY: RingStart живёт в статике; дескрипторы и буферы не двигаются и не
+// освобождаются, пока трансфер (и задача) живы.
+unsafe impl DmaTxBuffer for RingStart {
+    type View = ();
+    type Final = ();
+
+    fn prepare(&mut self) -> Preparation {
+        Preparation {
+            start: self.start,
+            // Ровно как DmaLoopBuf: владелец не проверяется, write-back выключен.
+            burst_transfer: BurstConfig::default(),
+            check_owner: Some(false),
+            auto_write_back: false,
+        }
+    }
+
+    fn into_view(self) {}
+    fn from_view(_view: Self::View) {}
+}
+
+/// Что показать в текущей секунде: тест-режим или реальное время.
+/// `lamp` = Some(0..5) в тест-режиме оставляет цифру только на одной лампе.
+fn wanted_samples(mode: u8, epoch: u64, lamp: Option<u8>) -> [u8; 3] {
+    match display_core::test_samples_lamp(mode, epoch, lamp) {
+        Some(s) => s,
+        None => {
+            let c = clock_core::time::epoch_to_civil(epoch);
+            display_core::slot_samples(&display_core::hhmmss_digits(c.hour, c.min, c.sec))
+        }
+    }
+}
+
+/// 0..5 — конкретная лампа, всё остальное (в т.ч. 6) — все шесть.
+fn lamp_of(v: u8) -> Option<u8> {
+    if v < 6 { Some(v) } else { None }
+}
+
+fn encode_request(samples: [u8; 3]) -> u32 {
+    REQ_VALID
+        | samples[0] as u32
+        | (samples[1] as u32) << 8
+        | (samples[2] as u32) << 16
+}
+
+/// Задача индикации: собирает кольцо, запускает DMA, дальше только публикует
+/// заявки на новые цифры (раз в секунду / по смене тест-режима).
 #[embassy_executor::task]
 pub async fn display_task(
     i2s: peripherals::I2S1<'static>,
     dma: peripherals::DMA_I2S1<'static>,
-    pins: TxEightBits<'static>,
+    pins: TxSixteenBits<'static>,
     ws: peripherals::GPIO3<'static>,
-    tg13: peripherals::GPIO13<'static>,
-    tg2: peripherals::GPIO2<'static>,
-    tg14: peripherals::GPIO14<'static>,
 ) -> ! {
-    let mut par = Some(I2sParallel::new(i2s, dma, Rate::from_hz(SAMPLE_HZ), pins, ws).into_async());
+    let mode = TEST_MODE.load(Ordering::Relaxed);
+    let on = DISPLAY_ON.load(Ordering::Relaxed);
+    let lamp = TEST_LAMP.load(Ordering::Relaxed);
+    let initial = if on {
+        wanted_samples(mode, clock::epoch_cached(), lamp_of(lamp))
+    } else {
+        [0; 3]
+    };
 
-    let mut tg0 = Output::new(tg13, Level::Low, OutputConfig::default()); // lamp 0 (Ч1) + lamp 3 (М2)
-    let mut tg1 = Output::new(tg2, Level::Low, OutputConfig::default()); // lamp 1 (Ч2) + lamp 4 (С1)
-    let mut tg2 = Output::new(tg14, Level::Low, OutputConfig::default()); // lamp 2 (М1) + lamp 5 (С2)
+    let descs_base = {
+        // SAFETY: display_task — единственный пользователь RING; ссылка
+        // заканчивается здесь, дальше кольцом владеют DMA и ISR.
+        let ring = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
+        ring.build();
+        if on {
+            for (slot, s) in initial.iter().enumerate() {
+                ring.set_slot(slot, *s, true);
+            }
+        }
+        let base = ring.descs.as_mut_ptr() as usize as u32;
+        // стартовая позиция LAST_SAMPLES = то, что уже записано в буферы
+        LAST_SAMPLES.store(
+            if on {
+                initial[0] as u32 | (initial[1] as u32) << 8 | (initial[2] as u32) << 16
+            } else {
+                LAST_OFF
+            },
+            Ordering::Relaxed,
+        );
+        base
+    };
+    RING_BASE.store(descs_base, Ordering::Relaxed);
 
-    let mut buf = Some(dma_tx_buffer!(SLOT_BYTES + BLANK_BYTES).unwrap());
+    log::info!(
+        "display: one looping frame, {} words ({} us, ~{} Hz), {} desc ({} B ON chunks), TG on lanes 8..10",
+        FRAME_WORDS,
+        FRAME_WORDS as u64 * 787 / 1000,
+        1_000_000_000u64 / (FRAME_WORDS as u64 * 787),
+        DESC_COUNT,
+        ON_BYTES,
+    );
 
-    let mut slot: usize = 0;
-    let mut frame: u64 = 0;
-    let mut errs: u32 = 0;
-    let mut log_at = Instant::now();
-    // Статистика длительности кадра (целая итерация слота): ловим мерцание —
-    // min/avg/max по всем слотам за 60 с.
-    let mut fmin: u64 = u64::MAX;
-    let mut fmax: u64 = 0;
-    let mut fsum: u64 = 0;
-    let mut fn_cnt: u64 = 0;
-    let mut last_epoch: u64 = u64::MAX;
-    let mut last_mode: u8 = 0xFF;
-    let mut samples = [10u8 | (10u8 << 4); 3]; // blank до первой секунды
+    let start = {
+        let ring = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
+        ring.start()
+    };
+    let par = I2sParallel::new(i2s, dma, Rate::from_hz(SAMPLE_HZ), pins, ws);
+
+    let xfer = match par.send(start) {
+        Ok(xfer) => xfer,
+        Err((e, _par, _buf)) => {
+            log::error!("display: circular DMA start failed: {:?}", e);
+            loop {
+                Timer::after_secs(1).await;
+            }
+        }
+    };
+
+    // OUT_EOF = конец хвостового dark-дескриптора, то есть граница кадра.
+    // Порядок важен: `ChannelTx::new` погасил линию I2S1 на всех CPU, поэтому
+    // сначала чистим possible pending, разрешаем источник, и только потом
+    // `bind_handler` снова разрешает линию. `int_ena` esp-hal наружу не отдаёт.
+    let regs = unsafe { &*esp32::I2S1::ptr() };
+    regs.int_clr().write(|w| w.out_eof().clear_bit_by_one());
+    regs.int_ena().modify(|_, w| w.out_eof().set_bit());
+    bind_handler(
+        Interrupt::I2S1,
+        InterruptHandler::new(i2s1_eof_isr, Priority::Priority1),
+    );
+    log::info!("display: OUT_EOF armed (frame tick, ISR at Priority1)");
+
+    hangdetect::beat(&hangdetect::FRAME);
+
+    let mut last_epoch = u64::MAX;
+    let mut last_mode = 0xFF;
+    let mut last_on = false;
+    let mut last_lamp = 0xFF;
+    let mut last_req = 0u32;
+    let mut tick: u32 = 0;
+    let mut logged = Instant::now();
+    let mut logged_ticks = EOF_TICKS.load(Ordering::Relaxed);
+    let mut logged_applied = APPLIED.load(Ordering::Relaxed);
+    let mut logged_requests = REQUESTS.load(Ordering::Relaxed);
     loop {
-        hangdetect::set_phase(&hangdetect::PHASE_DISP, 0); // слот жив, ждём следующий
-        let t0 = Instant::now();
-        // Горячий путь без await CLOCK-мьютекса: epoch из атомарного кэша
-        // (тикер refresh_cache), samples пересчитываются раз в секунду.
+        // 50 мс: секунда меняется с задержкой не больше одного тика.
+        Timer::after_millis(50).await;
+        hangdetect::beat(&hangdetect::FRAME);
+
         let epoch = clock::epoch_cached();
         let mode = TEST_MODE.load(Ordering::Relaxed);
-        if epoch != last_epoch || mode != last_mode {
-            samples = match display_core::test_samples(mode, epoch) {
-                Some(s) => s,
-                None => {
-                    let c = clock_core::time::epoch_to_civil(epoch);
-                    display_core::slot_samples(&display_core::hhmmss_digits(
-                        c.hour, c.min, c.sec,
-                    ))
-                }
-            };
+        let on = DISPLAY_ON.load(Ordering::Relaxed);
+        let lamp = TEST_LAMP.load(Ordering::Relaxed);
+        if epoch != last_epoch || mode != last_mode || on != last_on || lamp != last_lamp {
             last_epoch = epoch;
             last_mode = mode;
-        }
-
-        if !DISPLAY_ON.load(Ordering::Relaxed) {
-            for tg in [&mut tg0, &mut tg1, &mut tg2] {
-                tg.set_level(Level::Low);
+            last_on = on;
+            last_lamp = lamp;
+            let req = if on {
+                let mut r = encode_request(wanted_samples(mode, epoch, lamp_of(lamp)));
+                if NO_STROBE.load(Ordering::Relaxed) {
+                    r |= REQ_NOSTROBE;
+                }
+                r
+            } else {
+                REQ_VALID | REQ_OFF
+            };
+            // Если предыдущая заявка ещё не применена — она просто
+            // перезапишется: лучше пропустить тик, чем показать смесь.
+            if req != last_req {
+                REQUEST.store(req, Ordering::Release);
+                REQUESTS.fetch_add(1, Ordering::Relaxed);
+                last_req = req;
             }
-            Timer::after_millis(200).await;
-            continue;
         }
 
-        for tg in [&mut tg0, &mut tg1, &mut tg2] {
-            tg.set_level(Level::Low);
-        }
-        if mode == 0 || !NO_BLANK.load(Ordering::Relaxed) {
-            send_chunk(&mut par, &mut buf, display_core::BLANK_BYTE, BLANK_BYTES, &mut errs).await;
-        }
-
-        match slot {
-            0 => tg0.set_level(Level::High),
-            1 => tg1.set_level(Level::High),
-            _ => tg2.set_level(Level::High),
-        }
-        send_chunk(&mut par, &mut buf, samples[slot], SLOT_BYTES, &mut errs).await;
-
-        slot = (slot + 1) % 3;
-        if slot == 0 {
-            frame += 1;
-        }
-        let dt = t0.elapsed().as_micros();
-        if dt < fmin {
-            fmin = dt;
-        }
-        if dt > fmax {
-            fmax = dt;
-        }
-        fsum += dt;
-        fn_cnt += 1;
-        if log_at.elapsed() >= embassy_time::Duration::from_secs(60) {
-            log_at = Instant::now();
+        tick += 1;
+        if tick % 40 == 0 {
+            let now = Instant::now();
+            let elapsed_us = (now - logged).as_micros().max(1);
+            let ticks = EOF_TICKS.load(Ordering::Relaxed);
+            let applied = APPLIED.load(Ordering::Relaxed);
+            let requests = REQUESTS.load(Ordering::Relaxed);
+            let addr = EOF_DESC.load(Ordering::Relaxed);
+            let hz = ticks.wrapping_sub(logged_ticks) as u64 * 1_000_000 / elapsed_us;
+            // desc должен быть ровно +27 (хвостовой дескриптор) каждый кадр.
+            let desc = addr.wrapping_sub(RING_BASE.load(Ordering::Relaxed))
+                / core::mem::size_of::<DmaDescriptor>() as u32;
+            // int_raw/int_ena/state: если тик когда-нибудь «схлопнется», по этим
+            // трём числам видно, виноват лишний источник прерывания (ena),
+            // незакрытый pending (raw) или вставший FIFO (state).
+            let raw = regs.int_raw().read().bits();
+            let ena = regs.int_ena().read().bits();
+            let state = regs.state().read().bits();
             log::info!(
-                "display frames {} (slot bytes {}, blank bytes {}, DMA errors: {}, slot us min/avg/max: {}/{}/{}, test {})",
-                frame,
-                SLOT_BYTES,
-                BLANK_BYTES,
-                errs,
-                fmin,
-                fsum / fn_cnt.max(1),
-                fmax,
+                "display: alive, tx_idle={}, eof={} (~{} Hz), desc=+{}, applied={} (+{}), req={} (+{}), bad={}, mode={}, on={}, post={}ok/{}to, sending={}, raw={:08x}, ena={:08x}, st={:08x}",
+                xfer.is_done(),
+                ticks,
+                hz,
+                desc,
+                applied,
+                applied.wrapping_sub(logged_applied),
+                requests,
+                requests.wrapping_sub(logged_requests),
+                EOF_BAD_ADDR.load(Ordering::Relaxed),
                 mode,
+                on,
+                crate::logger::post_ok(),
+                crate::logger::post_timeouts(),
+                crate::logger::sending(),
+                raw,
+                ena,
+                state,
             );
-            fmin = u64::MAX;
-            fmax = 0;
-            fsum = 0;
-            fn_cnt = 0;
+            if ticks == logged_ticks {
+                // За целый интервал (2 с) ни одного EOF: DMA встал или ISR не
+                // вызывается. Отдельной строкой, чтобы это не потерялось.
+                log::error!(
+                    "display: НЕТ ТИКА КАДРА (eof не менялся), int_raw={:08x}, int_ena={:08x}, state={:08x}",
+                    raw,
+                    ena,
+                    state,
+                );
+            }
+            logged = now;
+            logged_ticks = ticks;
+            logged_applied = applied;
+            logged_requests = requests;
         }
     }
 }
 
-/// Claimed once from main: builds the pin bundle and spawns the task.
+/// Claimed once from main: builds the 16-bit pin bundle and spawns the task.
 pub fn spawn(
     spawner: &Spawner,
     i2s: peripherals::I2S1<'static>,
@@ -295,7 +543,14 @@ pub fn spawn(
     tg2: peripherals::GPIO2<'static>,
     tg14: peripherals::GPIO14<'static>,
 ) {
-    let pins = TxEightBits::new(gpio27, gpio26, gpio25, gpio33, gpio32, gpio12, gpio18, gpio19);
+    // 16-bit режим: lane i -> I2S1O_DATA_(8+i).
+    // lanes 0..7   = шины ламп (DATA_8..15)
+    // lanes 8..10  = TG0/TG1/TG2 (DATA_16..18)
+    // lanes 11..15 = физически отсутствуют
+    let pins = TxSixteenBits::new(
+        gpio27, gpio26, gpio25, gpio33, gpio32, gpio12, gpio18, gpio19, tg13, tg2, tg14, NoPin,
+        NoPin, NoPin, NoPin, NoPin,
+    );
     spawner
-        .spawn(display_task(i2s, dma, pins, ws, tg13, tg2, tg14).unwrap());
+        .spawn(display_task(i2s, dma, pins, ws).unwrap());
 }

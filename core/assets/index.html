@@ -52,8 +52,56 @@
             после установки пишется в DS1307. Пустой NTP-сервер = встроенные пулы (pool.ntp.org, time.google.com).</div>
     </div>
 
-    <h2>Дисплей</h2>
-    <div class="card"><span class="note">яркость/режимы индикации — модуль M5.</span></div>
+    <h2>Диагностика индикации</h2>
+    <div class="card">
+        <div class="row" id="digits"></div>
+        <div class="row">
+            <select id="lamp_sel">
+                <option value="6">все шесть</option>
+                <option value="0">Ч1</option>
+                <option value="1">Ч2</option>
+                <option value="2">М1</option>
+                <option value="3">М2</option>
+                <option value="4">С1</option>
+                <option value="5">С2</option>
+            </select>
+            <label class="note"><input type="checkbox" id="nostrobe"> без строба (лампы тёмные)</label>
+        </div>
+        <div class="row">
+            <button class="sec" id="d_clock">Часы</button>
+            <button class="sec" id="d_off">Погасить</button>
+            <button class="sec" id="d_cycle">Цикл 0..9</button>
+            <button class="sec" id="d_raw">Сырые коды</button>
+        </div>
+        <div id="d_msg" class="note">Цифра — на выбранной лампе или на всех. «Без строба» гонит код по шине, но
+            лампы не зажигает: так отличаем проблему шины/дешифратора от цепи катодов.</div>
+    </div>
+
+    <h2>Самопроверка</h2>
+    <div class="card">
+        <div class="row">
+            <button id="st_all">Прогнать 1..9</button>
+            <button class="sec" id="st_bad">Только 2/5/7</button>
+            <button class="sec" id="st_bus">2/5/7 без строба</button>
+        </div>
+        <div class="kv" id="st_out"></div>
+        <div id="st_msg" class="note">Каждая цифра держится 2 с, между шагами проверяется, что uptime не
+            сбросился. В строке — питание 3.3 В за последнее окно под нагрузкой.</div>
+    </div>
+
+    <h2>Питание и живучесть</h2>
+    <div class="card">
+        <div class="kv">
+            <b>boot #</b><span id="p_boot">—</span>
+            <b>brown-out</b><span id="p_bo">—</span>
+            <b>reset reason</b><span id="p_rst">—</span>
+            <b>BOD</b><span id="p_bod">—</span>
+            <b>3.3 В минимум</b><span id="p_min">—</span>
+            <b>окно под тестом</b><span id="p_win">—</span>
+            <b>лог POST</b><span id="p_post">—</span>
+            <b>индикация</b><span id="p_disp">—</span>
+        </div>
+    </div>
 
     <h2>Датчики</h2>
     <div class="card">

@@ -1,16 +1,11 @@
 [package]
 name = "nixieclock-firmware"
-version = "0.7.1"
+version = "0.8.8"
 edition = "2024"
 description = "ESP32 приложение на базе esp32-wifi-bootloader: WiFi OTA, rollback guard, WiFi-логи"
 
 [features]
-# M5-индикация (I2S1 LCD, 8 линий + стробы). По умолчанию ВЫКЛЮЧЕНА:
-# дефибриллятор в hangdetect.rs ходит в esp_hal::pac, а с esp-hal 1.2.x
-# этот модуль pub(crate) -> ветка display сейчас не компилируется.
-# Без фичи: нет I2S-таска, /display/* отвечает "disabled",
-# hang-detect следит только за циклом приложения (не за кадрами).
-default = []
+default = ["display"]
 display = []
 
 [dependencies]
@@ -34,6 +29,10 @@ esp-println = { version = "0.18.0", features = ["esp32", "log-04"] }
 esp-radio = { version = "1.0.0-beta.1", features = ["esp32", "log-04", "unstable", "wifi"] }
 esp-rtos = { version = "0.4.0", features = ["esp32", "embassy", "esp-radio", "log-04"] }
 esp-storage = { version = "0.10.0", features = ["esp32", "embedded-storage"] }
+# Прямой доступ к регистрам I2S1 (INT_ENA/INT_CLR/OUT_EOF_DES_ADDR): esp-hal
+# не отдаёт их наружу, а для тика кадра по OUT_EOF нужен PAC. Версия та же,
+# что тянет esp-hal 1.2.2 (0.41.0), — второго экземпляра в дереве не будет.
+esp32 = "0.41.0"
 heapless = "0.9.3"
 nb = "1.1.0"
 log = "0.4.22"

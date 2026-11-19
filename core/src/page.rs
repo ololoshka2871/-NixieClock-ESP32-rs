@@ -37,7 +37,10 @@ mod tests {
         let page = gunzip(PAGE_GZ);
         assert!(page.starts_with("<!DOCTYPE html>"));
         assert!(page.trim_end().ends_with("</html>"));
-        for id in ["uptime", "fw", "ip", "ota_state", "ota_url", "ota_btn", "revert_btn", "logs", "wifi_cur", "wifi_src", "wifi_ssid_in", "wifi_pass_in", "wifi_btn", "wifi_msg"] {
+        for id in ["uptime", "fw", "ip", "ota_state", "ota_url", "ota_btn", "revert_btn", "logs", "wifi_cur", "wifi_src", "wifi_ssid_in", "wifi_pass_in", "wifi_btn", "wifi_msg",
+            "digits", "lamp_sel", "nostrobe", "d_clock", "d_off", "d_cycle", "d_raw",
+            "st_all", "st_bad", "st_bus", "st_out", "st_msg",
+            "p_boot", "p_bo", "p_rst", "p_bod", "p_min", "p_win", "p_post", "p_disp"] {
             assert!(page.contains(&format!("id=\"{id}\"")), "missing #{id}");
         }
         // стили и скрипты — отдельными файлами, ничего инлайн
@@ -51,7 +54,7 @@ mod tests {
     #[test]
     fn app_js_uses_our_endpoints() {
         let js = gunzip(JS_GZ);
-        for ep in ["/api/status", "/ota?url=", "/revert", "/logs", "/api/wifi/connect"] {
+        for ep in ["/api/status", "/ota?url=", "/revert", "/logs", "/api/wifi/connect", "/display/test?", "/display/on", "/display/off", "/status"] {
             assert!(js.contains(ep), "missing endpoint {ep}");
         }
         // относительные fetch -> страница работает с любого адреса платы
@@ -70,8 +73,11 @@ mod tests {
 
     #[test]
     fn assets_fit_budget() {
-        // флеш-бюджет: суммарный gz ассетов держим компактным
+        // флеш-бюджет: суммарный gz ассетов держим компактным.
+        // Было 4096; страница диагностики (цифры/лампы/самопроверка/питание)
+        // добавила ~2.5 KB gz — 8 KB всё ещё ничтожно на фоне 836 KB образа,
+        // но предел нужен, чтобы ассеты не начали расти бесконтрольно.
         let total = PAGE_GZ.len() + CSS_GZ.len() + JS_GZ.len();
-        assert!(total < 4096, "gz assets too large: {total}");
+        assert!(total < 8192, "gz assets too large: {total}");
     }
 }

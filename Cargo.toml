@@ -4,7 +4,7 @@ members = ["core", "firmware"]
 
 # Профили действуют на весь workspace (в member Cargo.toml они игнорируются).
 [profile.release]
-opt-level = "s"
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 debug = 2

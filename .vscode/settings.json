@@ -1,0 +1,10 @@
+{
+    "lldb.displayFormat": "auto",
+    "lldb.showDisassembly": "always",
+    "lldb.dereferencePointers": true,
+
+    // Убрать ошибку Can't find crate for 'test'
+    "rust-analyzer.cargo.target": "xtensa-esp32-none-elf",
+    "rust-analyzer.checkOnSave": false,
+    "cortex-debug.variableUseNaturalFormat": false
+}

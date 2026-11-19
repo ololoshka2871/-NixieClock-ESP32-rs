@@ -91,6 +91,36 @@ pub fn test_samples(mode: u8, epoch: u64) -> Option<[u8; 3]> {
     }
 }
 
+/// То же, но с маской ламп: `Some(0..=5)` оставляет цифру только на этой
+/// лампе, `None` — на всех шести.
+///
+/// Зачем: `/display/test?digit=N` зажигает N на всех лампах сразу, то есть
+/// тянет из питания ток шести ламп одного и того же разряда. Если плата
+/// «складывается» именно от тока (а не от кода на шине), это видно сразу:
+/// одна лампа — норма, шесть — просадка. Маска позволяет перебрать лампы
+/// по одной и найти виновника (`?digit=2&lamp=3`).
+///
+/// Раскладка слотов: слот g несёт лампы g (младший ниббл) и g+3 (старший).
+pub fn test_samples_lamp(mode: u8, epoch: u64, lamp: Option<u8>) -> Option<[u8; 3]> {
+    let mut s = test_samples(mode, epoch)?;
+    let Some(l) = lamp.filter(|l| *l < 6) else {
+        return Some(s);
+    };
+    let target_slot = (l % 3) as usize;
+    let high_nibble = l >= 3;
+    for (g, slot) in s.iter_mut().enumerate() {
+        if g != target_slot {
+            *slot = BLANK_BYTE; // этой лампе в слоте нечего показывать
+        } else if high_nibble {
+            // слот несёт лампу g в младшем ниббле и g+3 в старшем
+            *slot = (*slot & 0xF0) | BLANK_CODE;
+        } else {
+            *slot = (*slot & 0x0F) | (BLANK_CODE << 4);
+        }
+    }
+    Some(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +172,33 @@ mod tests {
         assert_eq!(test_samples(TEST_RAW_CYCLE, 16), Some([0u8; 3]));
         assert_eq!(test_samples(TEST_RAW_CYCLE, 17), Some([1u8 | (1u8 << 4); 3]));
         assert_eq!(test_samples(255, 0), None);
+    }
+
+    #[test]
+    fn тест_одна_лампа() {
+        // digit=5 -> код 13 на всех лампах
+        let all = test_samples(5, 0).unwrap();
+        assert_eq!(all, [13u8 | (13u8 << 4); 3]);
+        // лампа 0: слот 0, младший ниббл живёт, старший погашен, слоты 1/2 пусты
+        assert_eq!(
+            test_samples_lamp(5, 0, Some(0)).unwrap(),
+            [13u8 | (BLANK_CODE << 4), BLANK_BYTE, BLANK_BYTE]
+        );
+        // лампа 4: слот 1, старший ниббл
+        assert_eq!(
+            test_samples_lamp(5, 0, Some(4)).unwrap(),
+            [BLANK_BYTE, BLANK_CODE | (13u8 << 4), BLANK_BYTE]
+        );
+        // лампа 5: слот 2, старший ниббл
+        assert_eq!(
+            test_samples_lamp(5, 0, Some(5)).unwrap(),
+            [BLANK_BYTE, BLANK_BYTE, BLANK_CODE | (13u8 << 4)]
+        );
+        // без маски и с маской вне 0..5 — все шесть
+        assert_eq!(test_samples_lamp(5, 0, None).unwrap(), all);
+        assert_eq!(test_samples_lamp(5, 0, Some(9)).unwrap(), all);
+        // в обычном режиме маска не действует (нет тест-семплов)
+        assert_eq!(test_samples_lamp(0, 0, Some(1)), None);
     }
 
     #[test]

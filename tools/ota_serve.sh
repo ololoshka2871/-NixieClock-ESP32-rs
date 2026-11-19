@@ -17,4 +17,5 @@ echo "прошивка платы (пример):"
 echo "  curl \"http://192.168.0.85/api/ota?url=http://<IP>:$PORT/app_ota.bin\""
 # ВАЖНО: раздаём через serve_ota.py, а не http.server — он добавляет заголовок
 # X-Crc32, без него плата качает образ без проверки целостности потока.
+# (python -m http.server не годится: 200 OK без X-Crc32 = образ без проверки)
 exec python3 "$(dirname "$0")/serve_ota.py" "$DIR" --port "$PORT"

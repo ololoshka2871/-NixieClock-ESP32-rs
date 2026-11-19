@@ -20,7 +20,7 @@ use embassy_executor::task;
 use crate::hangdetect;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_io_async::{Read, Write};
 use esp_hal::Async;
 use esp_hal::Blocking;
@@ -157,12 +157,10 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
     // не подключён ли, или битые провода. Цикл 10 с: удобно ловить осциллографом.
     let mut last_presence: Option<bool> = None;
     loop {
-        hangdetect::beat(&hangdetect::DS18);
         Timer::after_secs(10).await;
         let mut temp_mc: Option<i32> = None;
         let mut sp: Option<[u8; 9]> = None;
         let mut reset2 = false;
-        hangdetect::set_phase(&hangdetect::PHASE_DS18, 1); // 1-wire reset (бит-бэнг)
         let present = ow.reset();
         if last_presence != Some(present) {
             log::info!("ds18x20: presence на GPIO4 = {}", present);
@@ -173,9 +171,7 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
             ow.write_byte(codec::DS18_CMD_CONVERT);
             ow.release();
             // 12-битная конверсия — ждём асинхронно, шина высоко на pull-up.
-            hangdetect::set_phase(&hangdetect::PHASE_DS18, 2); // конверсия (750 мс)
             Timer::after_millis(750).await;
-            hangdetect::set_phase(&hangdetect::PHASE_DS18, 3); // повторный reset
             reset2 = ow.reset();
             if reset2 {
                 ow.write_byte(codec::DS18_CMD_SKIP_ROM);
@@ -211,32 +207,69 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
 
 #[task]
 pub async fn mhz19_task(mut uart: Uart<'static, Async>) {
-    let mut buf = [0u8; 9];
     // Датчику нужно несколько секунд на прогрев лампы после подачи питания.
     Timer::after_secs(20).await;
     loop {
         hangdetect::beat(&hangdetect::MHZ);
         let cmd = codec::mhz19_command(codec::MHZ19_CMD_READ_PPM, [0, 0, 0, 0]);
-        match uart.write_all(&cmd).await {
-            Ok(()) => match with_timeout(Duration::from_secs(3), uart.read_exact(&mut buf)).await {
-                Ok(Ok(())) => match codec::Mhz19Reading::parse(&buf, codec::MHZ19_CMD_READ_PPM) {
-                    Some(r) => {
-                        if r.status != 0 {
-                            log::warn!("mhz19: status {} (калибровка/ошибка)", r.status);
-                        }
-                        log::info!("mhz19: {} ppm, датчик {} C", r.co2_ppm, r.sensor_temp_uc / 1_000_000);
-                        let mut s = SENSORS.lock().await;
-                        s.co2_ppm = Some(r.co2_ppm);
-                        s.co2_temp_mc = Some(r.sensor_temp_uc / 1000);
-                    }
-                    None => log::warn!("mhz19: битый кадр: {:02X?}", buf),
-                },
-                Ok(Err(e)) => log::warn!("mhz19: read: {:?}", e),
-                Err(_elapsed) => log::warn!("mhz19: нет ответа 3 с (датчик не подключён к UART2?)"),
-            },
-            Err(e) => log::warn!("mhz19: write: {:?}", e),
+        let result = match uart.write_all(&cmd).await {
+            Ok(()) => read_mhz19_frame(&mut uart).await,
+            Err(e) => {
+                log::warn!("mhz19: write: {:?}", e);
+                Timer::after_secs(2).await;
+                continue;
+            }
+        };
+        match result {
+            Some(r) => {
+                if r.status != 0 {
+                    log::warn!("mhz19: status {} (калибровка/ошибка)", r.status);
+                }
+                log::info!("mhz19: {} ppm, датчик {} C", r.co2_ppm, r.sensor_temp_uc / 1_000_000);
+                let mut s = SENSORS.lock().await;
+                s.co2_ppm = Some(r.co2_ppm);
+                s.co2_temp_mc = Some(r.sensor_temp_uc / 1000);
+            }
+            None => log::warn!("mhz19: нет валидного кадра за 3 с (датчик не отвечает или шум на линии)"),
         }
         Timer::after_secs(2).await;
+    }
+}
+
+/// Прочитать один ответ MH-Z19, **ресинхронизируясь** по потоку байт.
+///
+/// Раньше здесь стоял `read_exact(&mut [u8; 9])`: любой лишний или потерянный
+/// байт сдвигал кадр, `parse` возвращал None, и в лог летело «битый кадр»
+/// по нескольку раз в секунду (в дампе видно ведущий 0x00). Теперь держим
+/// скользящее окно из 9 байт и пробуем разобрать его на каждой позиции:
+/// старт 0xFF + ожидаемая команда + контрольная сумма отсеивают мусор сами.
+async fn read_mhz19_frame(uart: &mut Uart<'static, Async>) -> Option<codec::Mhz19Reading> {
+    let mut win = [0u8; 9];
+    let mut n = 0usize;
+    let mut b = [0u8; 1];
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        let left = deadline - now;
+        match with_timeout(left, uart.read_exact(&mut b)).await {
+            Ok(Ok(())) => {}
+            _ => return None,
+        }
+        if n < win.len() {
+            win[n] = b[0];
+            n += 1;
+        } else {
+            win.copy_within(1.., 0);
+            win[win.len() - 1] = b[0];
+        }
+        if n == win.len() {
+            if let Some(r) = codec::Mhz19Reading::parse(&win, codec::MHZ19_CMD_READ_PPM) {
+                return Some(r);
+            }
+        }
     }
 }
 
@@ -254,6 +287,105 @@ pub async fn adc_task(
 ) {
     loop {
         hangdetect::beat(&hangdetect::CYCLE); // adc жив = исполнитель жив (дублирует app_task)
+
+        // Под тестом индикации меряем питание часто: `?digit=N` зажигает цифру
+        // на всех шести лампах сразу, то есть ток в 6 раз больше обычного.
+        // Если плата «складывается» именно от тока, здесь будет видно
+        // проседание 3.3/5/12 В в момент, когда горят 2/5/7.
+        #[cfg(feature = "display")]
+        let stressed = crate::display::TEST_MODE.load(core::sync::atomic::Ordering::Relaxed) != 0;
+        #[cfg(not(feature = "display"))]
+        let stressed = false;
+
+        if stressed {
+            // Окно ~1 с, сэмпл каждые 2 мс. `Timer::after_millis` уступает
+            // исполнитель, так что индикация и сеть не страдают.
+            //
+            // Считаем СРЕДНЕЕ, а не только минимум: ADC на ESP32 при
+            // переключении ламп ловит выбросы земли/наводки, и минимум за
+            // 500 сэмплов — это шумовой пол (легко 1.8 В на живой шине 3.3 В),
+            // а не реальное питание. Среднее устойчиво, а `low` (сколько
+            // сэмплов ниже 3.0 В) показывает, была ли просадка массовой.
+            let mut sum33 = 0u64;
+            let mut n33 = 0u32;
+            let mut low33 = 0u32;
+            let mut min33 = u16::MAX;
+            let mut sum5 = 0u64;
+            let mut n5 = 0u32;
+            let mut sum12 = 0u64;
+            let mut n12 = 0u32;
+            let mut min12 = u16::MAX;
+            let mut max12 = 0u16;
+            let mut last33 = 0u16;
+            let mut last5 = 0u16;
+            let mut last12 = 0u16;
+            for _ in 0..500 {
+                if let Ok(mv) = block!(adc.read_oneshot(&mut p33)) {
+                    let r = codec::pin_mv_to_rail_mv(mv, codec::RATIO_3V3_X1000);
+                    sum33 += r as u64;
+                    n33 += 1;
+                    if r < 3000 {
+                        low33 += 1;
+                    }
+                    min33 = min33.min(mv);
+                    last33 = mv;
+                }
+                if let Ok(mv) = block!(adc.read_oneshot(&mut p5)) {
+                    sum5 += codec::pin_mv_to_rail_mv(mv, codec::RATIO_5V_X1000) as u64;
+                    n5 += 1;
+                    last5 = mv;
+                }
+                if let Ok(mv) = block!(adc.read_oneshot(&mut p12)) {
+                    sum12 += codec::pin_mv_to_rail_mv(mv, codec::RATIO_12V_X1000) as u64;
+                    n12 += 1;
+                    min12 = min12.min(mv);
+                    max12 = max12.max(mv);
+                    last12 = mv;
+                }
+                Timer::after_millis(2).await;
+            }
+            let avg = |s: u64, n: u32| if n == 0 { None } else { Some((s / n as u64) as u32) };
+            let rail = |v: u16, r: u32| {
+                if v == u16::MAX {
+                    None
+                } else {
+                    Some(codec::pin_mv_to_rail_mv(v, r))
+                }
+            };
+            let a33 = avg(sum33, n33);
+            let a5 = avg(sum5, n5);
+            let a12 = avg(sum12, n12);
+            {
+                let mut s = SENSORS.lock().await;
+                s.v33_mv = rail(last33, codec::RATIO_3V3_X1000);
+                s.v5_mv = rail(last5, codec::RATIO_5V_X1000);
+                s.v12_mv = rail(last12, codec::RATIO_12V_X1000);
+            }
+            match (a33, a5, a12) {
+                (Some(v33), Some(v5), Some(v12)) => {
+                    // В /status идёт среднее: одиночный минимум там бесполезен.
+                    crate::power::note_v33(v33);
+                    let min33mv = rail(min33, codec::RATIO_3V3_X1000).unwrap_or(0);
+                    crate::power::set_window(v33, min33mv, low33, n33);
+                    log::warn!(
+                        "adc: под нагрузкой (1 с): 3v3 avg={} min={} low={}/{}; 5v avg={}; 12v avg={} min={} max={} [mode={} lamp={}]",
+                        v33,
+                        min33mv,
+                        low33,
+                        n33,
+                        v5,
+                        v12,
+                        rail(min12, codec::RATIO_12V_X1000).unwrap_or(0),
+                        codec::pin_mv_to_rail_mv(max12, codec::RATIO_12V_X1000),
+                        crate::display::TEST_MODE.load(core::sync::atomic::Ordering::Relaxed),
+                        crate::display::TEST_LAMP.load(core::sync::atomic::Ordering::Relaxed),
+                    )
+                }
+                _ => log::warn!("adc: под нагрузкой: часть каналов не читается"),
+            }
+            continue;
+        }
+
         Timer::after_secs(30).await;
         // SAR-конверсии строго по очереди (чужая конверсия = WouldBlock).
         let r33 = block!(adc.read_oneshot(&mut p33)).ok();
@@ -264,7 +396,10 @@ pub async fn adc_task(
         s.v5_mv = r5.map(|mv| codec::pin_mv_to_rail_mv(mv, codec::RATIO_5V_X1000));
         s.v12_mv = r12.map(|mv| codec::pin_mv_to_rail_mv(mv, codec::RATIO_12V_X1000));
         match (s.v33_mv, s.v5_mv, s.v12_mv) {
-            (Some(a), Some(b), Some(c)) => log::info!("adc: 3v3={}mV 5v={}mV 12v={}mV", a, b, c),
+            (Some(a), Some(b), Some(c)) => {
+                crate::power::note_v33(a);
+                log::info!("adc: 3v3={}mV 5v={}mV 12v={}mV", a, b, c)
+            }
             _ => log::warn!("adc: часть каналов не читается"),
         }
     }

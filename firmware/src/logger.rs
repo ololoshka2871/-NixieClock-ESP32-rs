@@ -1,10 +1,17 @@
 //! Логирование по WiFi: каждая log-запись кладётся в ring-buffer с номером seq;
 //! фоновая задача собирает неотправленные записи и пакетами POST'ит на LOG_URL.
-//! Пока идёт POST, логирование подавлено (защита от рекурсии лога внутри reqwless).
+//!
+//! Раньше на время POST стоял флаг SENDING, который глушил ВСЕ логи. Это была
+//! ловушка: если POST зависал (например, reqwless ждал ответ, а соединение
+//! умерло), SENDING оставался true навсегда, и лог замолкал ровно тогда, когда
+//! он нужнее всего — при разборе поломки. Теперь:
+//!   * логи не подавляются никогда (рекурсии нет: хук только пишет в ring);
+//!   * POST ограничен `POST_TIMEOUT` — зависший сокет не блокирует задачу;
+//!   * SENDING остался как индикатор «идёт отправка» для телеметрии.
 
 use core::cell::RefCell;
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering}; // +DROPPED ниже
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_net::{
     dns::DnsSocket,
@@ -15,7 +22,7 @@ use embassy_sync::blocking_mutex::{
     raw::CriticalSectionRawMutex,
     Mutex,
 };
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use heapless::{Deque, String};
 use reqwless::client::HttpClient;
 use reqwless::request::{Method, RequestBuilder};
@@ -23,7 +30,11 @@ use reqwless::request::{Method, RequestBuilder};
 use crate::LOG_URL;
 
 
-const MAX_LINE: usize = 180;
+/// Максимальная длина строки лога. Раньше было 180, и длинная диагностика
+/// (int_raw/int_ena/state) молча обрезалась в `write!` — в коллекторе строки
+/// кончались на `on=true`. 256 хватает самой длинной строке с запасом; ring
+/// 64x256 = 16 KB .bss (стек main-задачи уменьшается на столько же).
+const MAX_LINE: usize = 256;
 const RING_MAX: usize = 64;
 const BATCH_MAX: usize = 3500;
 
@@ -32,9 +43,31 @@ static RING: Mutex<
     CriticalSectionRawMutex,
     RefCell<Deque<(u32, String<MAX_LINE>), RING_MAX>>,
 > = Mutex::new(RefCell::new(Deque::new()));
+/// Идёт POST (только индикатор: логи не подавляются).
 static SENDING: AtomicBool = AtomicBool::new(false);
+/// Успешные POST'ы и жёсткие таймауты — видны в строке `display: alive`,
+/// чтобы по коллектору было ясно, живёт ли канал логов.
+pub static POST_OK: AtomicU32 = AtomicU32::new(0);
+pub static POST_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
 /// Сколько записей потеряно переполнением ring, пока коллектор недоступен.
 static DROPPED: AtomicU32 = AtomicU32::new(0);
+
+/// Сколько секунд даём одному POST. `TcpClient::set_timeout` покрывает только
+/// connect; чтение ответа в reqwless может ждать вечно, если соединение
+/// «повисло» (пир исчез без RST/FIN).
+const POST_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub fn post_ok() -> u32 {
+    POST_OK.load(Ordering::Relaxed)
+}
+
+pub fn post_timeouts() -> u32 {
+    POST_TIMEOUTS.load(Ordering::Relaxed)
+}
+
+pub fn sending() -> bool {
+    SENDING.load(Ordering::Relaxed)
+}
 
 struct WifiLogger;
 
@@ -44,7 +77,7 @@ impl log::Log for WifiLogger {
     }
 
     fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) || SENDING.load(Ordering::SeqCst) {
+        if !self.enabled(record.metadata()) {
             return;
         }
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
@@ -56,9 +89,10 @@ impl log::Log for WifiLogger {
             Instant::now().as_millis(),
             record.args()
         );
-        // Дублируем в UART: esp_println пишет напрямую в UART0, минуя log::,
-        // рекурсии нет. Без этого UART молчал: лог-хук уводил всё в ring/WiFi.
-        esp_println::println!("{}", line);
+        // Неблокирующий дубль в UART0 (см. uarttap.rs): esp_println на ESP32
+        // крутится на ROM-функции, которая ждёт места в TX-FIFO, — это
+        // миллисекунды в вызывающем коде на каждую строку.
+        crate::uarttap::line(line.as_str());
         RING.lock(|cell| {
             let ring = &mut *cell.borrow_mut();
             if ring.is_full() {
@@ -80,14 +114,28 @@ pub fn init() {
     }
 }
 
-/// Дамп ring-буфера для HTTP-эндпоинта /logs (от самых старых к новым).
+/// Дамп ring-буфера для HTTP-эндпоинта /logs — **последние** строки, которые
+/// влезают в 4096 байт, в хронологическом порядке.
+///
+/// Раньше отдавались первые строки кольца (64 x ~250 B = 16 KB), то есть
+/// самые старые: при разборе «что случилось только что» страница показывала
+/// состояние на минуту назад. Теперь считаем, сколько хвостовых строк влезает,
+/// и отдаём именно хвост.
 pub fn dump_into(out: &mut String<4096>) {
     out.clear();
     RING.lock(|cell| {
-        for (_seq, line) in cell.borrow().iter() {
-            if out.len() + line.len() + 1 > out.capacity() {
+        let ring = cell.borrow();
+        let mut start = ring.len();
+        let mut need = 0usize;
+        while start > 0 {
+            let len = ring.get(start - 1).map(|(_, l)| l.len() + 1).unwrap_or(0);
+            if need + len > out.capacity() {
                 break;
             }
+            need += len;
+            start -= 1;
+        }
+        for (_seq, line) in ring.iter().skip(start) {
             let _ = out.push_str(line);
             let _ = out.push('\n');
         }
@@ -142,11 +190,29 @@ pub async fn logfwd_task(stack: Stack<'static>) {
         }
 
         SENDING.store(true, Ordering::SeqCst);
-        let result = do_post(&tcp, &dns, host.as_str(), body.as_str(), hdrbuf).await;
+        // Крошка в RTC: если зависнем именно здесь, на следующем буте будет
+        // видно, что последним делом был POST логов.
+        crate::rtcmark::mark(crate::rtcmark::T_LOG, crate::rtcmark::L_POST);
+        let result = match with_timeout(
+            POST_TIMEOUT,
+            do_post(&tcp, &dns, host.as_str(), body.as_str(), hdrbuf),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                POST_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+                let mut s: String<128> = String::new();
+                let _ = write!(s, "timeout {}s (ответ не пришёл)", POST_TIMEOUT.as_secs());
+                Err(s)
+            }
+        };
+        crate::rtcmark::clear();
         SENDING.store(false, Ordering::SeqCst);
 
         match result {
             Ok(()) => {
+                POST_OK.fetch_add(1, Ordering::Relaxed);
                 last_sent = batch_last;
                 body.clear();
                 if fails > 0 {
