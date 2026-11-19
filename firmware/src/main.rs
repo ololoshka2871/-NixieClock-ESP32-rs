@@ -73,8 +73,10 @@ mod sensors;
 mod server;
 mod settings;
 mod tz;
+mod ui;
 mod updater;
 mod uarttap;
+mod ws2812;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -384,6 +386,10 @@ async fn main(spawner: Spawner) -> ! {
         peripherals.GPIO2,
         peripherals.GPIO14,
     );
+
+    // Подсветка WS2812 (GPIO15) и кнопка BOOT (GPIO0) — как в оригинале.
+    spawner.spawn(ws2812::led_task(peripherals.RMT, peripherals.GPIO15).unwrap());
+    spawner.spawn(ui::button_task(peripherals.GPIO0).unwrap());
 
     spawner.spawn(clock::sntp_task(stack).unwrap());
     spawner.spawn(connection(controller).unwrap());

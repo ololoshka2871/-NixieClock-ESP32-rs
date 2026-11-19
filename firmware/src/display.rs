@@ -387,9 +387,18 @@ unsafe impl DmaTxBuffer for RingStart {
 fn wanted_samples(mode: u8, epoch: u64, lamp: Option<u8>) -> [u8; 3] {
     match display_core::test_samples_lamp(mode, epoch, lamp) {
         Some(s) => s,
-        None => {
+        None => display_core::slot_samples(&digits_for_mode(epoch)),
+    }
+}
+
+/// Цифры для текущего режима кнопки: часы / CO2 / температура.
+fn digits_for_mode(epoch: u64) -> [u8; 6] {
+    match crate::ui::mode() {
+        crate::ui::MODE_CO2 => clock_core::led::co2_digits(crate::sensors::co2_ppm_now()),
+        crate::ui::MODE_TEMP => clock_core::led::temp_digits(crate::sensors::temp_mc_now()),
+        _ => {
             let c = crate::tz::civil(epoch);
-            display_core::slot_samples(&display_core::hhmmss_digits(c.hour, c.min, c.sec))
+            display_core::hhmmss_digits(c.hour, c.min, c.sec)
         }
     }
 }

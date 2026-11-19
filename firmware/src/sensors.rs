@@ -17,6 +17,8 @@
 
 use embassy_executor::task;
 
+use core::sync::atomic::{AtomicI32, Ordering};
+
 use crate::hangdetect;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
@@ -64,6 +66,26 @@ impl SensorData {
 }
 
 pub static SENSORS: Mutex<CriticalSectionRawMutex, SensorData> = Mutex::new(SensorData::new());
+
+/// Зеркала для кадрового движка индикации и подсветки: мьютекс `SENSORS` там
+/// не взять (кадр рисуется в тесном цикле), поэтому значения дублируются в
+/// атомиках. Сентинелы: `i32::MIN` — температуры нет, `-1` — CO2 нет.
+static TEMP_MC: AtomicI32 = AtomicI32::new(i32::MIN);
+static CO2_PPM: AtomicI32 = AtomicI32::new(-1);
+
+pub fn temp_mc_now() -> Option<i32> {
+    match TEMP_MC.load(Ordering::Relaxed) {
+        i32::MIN => None,
+        v => Some(v),
+    }
+}
+
+pub fn co2_ppm_now() -> Option<i32> {
+    match CO2_PPM.load(Ordering::Relaxed) {
+        v if v < 0 => None,
+        v => Some(v),
+    }
+}
 
 // ---------------- DS18x20: 1-Wire мастер (GPIO4) ----------------
 
@@ -200,6 +222,7 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
             ),
         }
         SENSORS.lock().await.temp_mc = temp_mc;
+        TEMP_MC.store(temp_mc.unwrap_or(i32::MIN), Ordering::Relaxed);
     }
 }
 
@@ -228,6 +251,7 @@ pub async fn mhz19_task(mut uart: Uart<'static, Async>) {
                         r.co2_ppm,
                         r.sensor_temp_uc / 1_000_000
                     );
+                    CO2_PPM.store(r.co2_ppm as i32, Ordering::Relaxed);
                     let mut s = SENSORS.lock().await;
                     s.co2_ppm = Some(r.co2_ppm);
                     s.co2_temp_mc = Some(r.sensor_temp_uc / 1000);
