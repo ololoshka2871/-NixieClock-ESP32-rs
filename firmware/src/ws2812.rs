@@ -24,6 +24,9 @@ const T1L: u16 = 44;
 
 /// Битов в кадре: 6 светодиодов × 24.
 pub const BITS: usize = led::LEDS * 24;
+/// Посылок в буфере: биты кадра + end-marker (без него RMT отказывается
+/// передавать: `Error::EndMarkerMissing`).
+pub const CODES: usize = BITS + 1;
 /// Байт в кадре: 6 × 3 (G, R, B — порядок провода WS2812).
 pub const FRAME_BYTES: usize = led::LEDS * 3;
 
@@ -31,10 +34,11 @@ pub const FRAME_BYTES: usize = led::LEDS * 3;
 const PERIOD: Duration = Duration::from_millis(200);
 
 /// Кодирование байтов кадра в посылки RMT (MSB первым).
-pub fn encode(bytes: &[u8; FRAME_BYTES]) -> [PulseCode; BITS] {
+pub fn encode(bytes: &[u8; FRAME_BYTES]) -> [PulseCode; CODES] {
     const ONE: PulseCode = PulseCode::new(Level::High, T1H, Level::Low, T1L);
     const ZERO: PulseCode = PulseCode::new(Level::High, T0H, Level::Low, T0L);
-    let mut out = [ZERO; BITS];
+    let mut out = [ZERO; CODES];
+    out[CODES - 1] = PulseCode::end_marker();
     let mut i = 0;
     for b in bytes.iter() {
         let mut mask = 0x80u8;
@@ -92,6 +96,7 @@ pub async fn led_task(
     };
 
     let mut last = [0xFFu8; FRAME_BYTES];
+    let mut warned = false; // один warning за бут: иначе лог забивается
     log::info!("подсветка: WS2812 на GPIO15, светодиодов: {}", led::LEDS);
     loop {
         let frame = current_frame();
@@ -112,7 +117,10 @@ pub async fn led_task(
                 }
                 Err((e, c)) => {
                     chan = c;
-                    log::warn!("подсветка: кадр не отправлен: {:?}", e);
+                    if !warned {
+                        warned = true;
+                        log::warn!("подсветка: кадр не отправлен: {:?}", e);
+                    }
                 }
             }
         }
