@@ -145,7 +145,7 @@ fn http_name(v: u32) -> &'static str {
         H_STATUS => "/status",
         H_LOGS => "/logs",
         H_TEST => "/display/test",
-        H_ONOFF => "/display/off|on",
+        H_ONOFF => "/display/off|on|fade",
         H_OTA => "/ota",
         H_REVERT => "/revert",
         H_POST => "POST /api/*",

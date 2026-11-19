@@ -66,6 +66,7 @@
                 <option value="5">С2</option>
             </select>
             <label class="note"><input type="checkbox" id="nostrobe"> без строба (лампы тёмные)</label>
+            <label class="note"><input type="checkbox" id="fade" checked> плавная смена цифр (fade)</label>
         </div>
         <div class="row">
             <button class="sec" id="d_clock">Часы</button>
@@ -74,7 +75,8 @@
             <button class="sec" id="d_raw">Сырые коды</button>
         </div>
         <div id="d_msg" class="note">Цифра — на выбранной лампе или на всех. «Без строба» гонит код по шине, но
-            лампы не зажигает: так отличаем проблему шины/дешифратора от цепи катодов.</div>
+            лампы не зажигает: так отличаем проблему шины/дешифратора от цепи катодов. «Fade» — старая цифра
+            гаснет линейно до нуля, затем так же плавно зажигается новая.</div>
     </div>
 
     <h2>Самопроверка</h2>

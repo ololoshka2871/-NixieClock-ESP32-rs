@@ -19,7 +19,7 @@ use esp_hal::timer::PeriodicTimer;
 
 // Счётчики живучести: задачи дергают beat(), ISR следит изменение/застой.
 pub static CYCLE: AtomicU32 = AtomicU32::new(0); // app_task: каждые 2 с
-pub static FRAME: AtomicU32 = AtomicU32::new(0); // display: посланные DMA-чанки (~1 к/с)
+pub static FRAME: AtomicU32 = AtomicU32::new(0); // display: тик анимации/индикации (~200/с)
 pub static MHZ: AtomicU32 = AtomicU32::new(0); // mhz19: цикл ~2 с
 pub static DS18: AtomicU32 = AtomicU32::new(0); // ds18x20: цикл 10 с
 
