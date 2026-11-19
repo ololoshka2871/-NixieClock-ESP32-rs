@@ -1,38 +1,39 @@
-//! ЭКСПЕРИМЕНТ, шаг 2a: TG0/TG1/TG2 через I2S1 16-bit parallel + DMA-кольцо,
-//! плюс ISR на `OUT_EOF` как тик кадра. Цифры по-прежнему нулевые.
+//! Индикация: I2S1 16-bit parallel + DMA-кольцо, один кадр в железе и
+//! атомарная подмена цифр по тику кадра.
 //!
-//! Что делает эта версия:
-//!   * 16-битный параллельный режим I2S1. Lanes 0..7 — прежние 8 шин
-//!     (DATA_8..15, GPIO27/26/25/33/32/12/18/19), lanes 8..10 — TG0/TG1/TG2
-//!     (DATA_16..18, GPIO13/2/14), lanes 11..15 — NoPin (в железе их нет).
-//!   * Коды ламп (младшие 8 бит слова) — всегда 0. На осциллографе должны
-//!     быть видны только три строба.
-//!   * Один кадр = 3 слота + хвост, 6400 B. Поле size дескриптора — 12 бит
-//!     (максимум 4095 B), поэтому кадр разбит на 2 дескриптора по 3200 B.
-//!     `suc_eof` стоит только на втором — один тик на кадр.
-//!   * 3 кадра (6 дескрипторов) замкнуты в кольцо. После `send()` DMA обходит
-//!     кольцо вечно, процессор в тракте не участвует.
-//!   * ISR на `I2S1` по `OUT_EOF`: считает тики кадра и запоминает
-//!     `OUT_EOF_DES_ADDR`, чтобы (а) подтвердить частоту ~397 Гц и (б) понять,
-//!     какой дескриптор железо называет «только что законченным». Это
-//!     фундамент для N-буферизации: по этому адресу выбирается кадр, который
-//!     DMA ещё не читает.
+//! Раскладка шин: lanes 0..7 — восемь шин ламп (DATA_8..15,
+//! GPIO27/26/25/33/32/12/18/19), lanes 8..10 — TG0/TG1/TG2 (DATA_16..18,
+//! GPIO13/2/14), lanes 11..15 — NoPin. В 16-битном слове биты 0..7 — коды
+//! дешифраторов, биты 8..10 — стробы слотов.
 //!
-//! Замерено на шаге 1: слово = 787 нс (1.27 Мслов/с), то есть в 16-bit режиме
-//! при `SAMPLE_HZ = 1.27 МГц` на слово приходится 2 BCK. Делитель упирается в
-//! максимум 63 (минимум частоты на ESP32), поэтому медленнее слово не пойдёт.
-//! Отсюда геометрия:
-//!   * слот 1056 слов = 831.5 мкс (TG высокий 1024 слова = 806 мкс),
-//!   * кадр 3200 слов = 2519.7 мкс = 396.9 Гц.
+//! Почему один кадр, а не N целых кадров. Кадр = 3 слота (по 1056 слов) +
+//! 32 слова тьмы = 3200 слов (2.52 мс, ~397 Гц). Если держать в кольце
+//! 3 полных кадра, то обновлять их можно только по одному (пока DMA читает
+//! один, остальные свободны), и на время обновления дисплей показывал бы
+//! смесь старых и новых цифр. Вместо этого окно строба собрано из 8
+//! дескрипторов по 128 слов, которые смотрят в один и тот же маленький
+//! буфер слота (256 B). Тогда:
 //!
-//! Что проверить на этом шаге:
-//!   1. Картинка на осциллографе не изменилась (слот 831 мкс, кадр 2.52 мс).
-//!   2. В логе раз в 2 с: `eof` растёт на ~794 за 2 с (`~397 Hz`), `desc +1/+3/+5`
-//!      (или +2/+4/+0 — зависит от того, отдаёт ли железо адрес самого
-//!      EOF-дескриптора или следующего за ним; это и выясняем).
-//!   3. `bad=0`, `tx_idle=false`.
+//!   * кадр один и крутится вечно: dark(32) + ON(8x128) + dark(32) + ... +
+//!     tail-dark(32), 28 дескрипторов;
+//!   * цифры живут в трёх буферах по 256 B (slot 0..2), а не в 6.4 KB;
+//!   * ISR на `OUT_EOF` (конец tail-dark) получает готовые семплы и
+//!     переписывает только изменившиеся буферы — обычно один слот, 64
+//!     u32-записи, ~1-2 мкс. До первого ON-слова следующего кадра остаётся
+//!     32 слова тьмы (25 мкс), но slot 0 обычно не меняется, а slot 2
+//!     (секунды) читается через ~1.7 мс — запас огромный;
+//!   * кадр всегда целостный: старый и новый кадр не смешиваются никогда,
+//!     потому что подмена идёт на границе кадра, а не посреди него.
 //!
-//! Оригинальная реализация сохранена рядом: `display.rs.bak`.
+//! Память: в `.bss` ~1.2 KB вместо 19 KB (стек main-задачи был 30 KB, станет
+//! ~48 KB). Линкер кладёт `_stack_end` сразу после `.bss`, так что каждый
+//! килобайт статики = килобайт стека.
+//!
+//! Замерено: слово = 787 нс (1.27 Мслов/с, делитель 160 МГц / 2.54 МГц = 63 —
+//! минимум для 6-битного поля). Отсюда слот 1056 слов = 831.5 мкс (строб
+//! 1024 слова = 806 мкс), кадр 3200 слов = 2519.7 мкс = 396.9 Гц.
+//!
+//! Оригинальная 8-битная реализация сохранена рядом: `display.rs.bak`.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
@@ -47,7 +48,9 @@ use esp_hal::peripherals;
 use esp_hal::peripherals::Interrupt;
 use esp_hal::time::Rate;
 
-use crate::hangdetect;
+use clock_core::display as display_core;
+
+use crate::{clock, hangdetect};
 
 /// Частота, которую получает драйвер. Для 16-bit режима esp-hal считает
 /// mclk = 2 * SAMPLE_HZ, bck_div = 1; при 1.27 МГц делитель упирается в
@@ -55,99 +58,173 @@ use crate::hangdetect;
 /// Замер: одно 16-битное слово = 787 нс.
 const SAMPLE_HZ: u32 = 1_270_000;
 
-/// Слово = 16 бит = одна посылка на шину. Биты 0..7 — коды ламп, 8..10 — TG.
+/// Слово = 16 бит. Биты 0..7 — коды ламп, 8..10 — TG0/TG1/TG2.
 const TG_SHIFT: u16 = 8;
 
-/// Слот: пауза, окно строба, пауза. Всё в 16-битных словах.
-const SETUP_WORDS: usize = 16;
+/// Тёмная пауза перед слотом и в конце кадра. 32 слова = 25.2 мкс.
+const DARK_WORDS: usize = 32;
+/// Тёмное слово: оба дешифратора в гашении (код 10 = 0xA), все TG = 0.
+///
+/// Раскладка 16-битного слова: биты 0..3 — код шины A, 4..7 — код шины B,
+/// **8..10 — TG0/TG1/TG2**, 11..15 — NoPin. Значит гашение это
+/// `0x00AA` (0xA в каждом ниббле, старший байт нулевой).
+///
+/// Здесь стояло `0x0A0A` — и это была ошибка: `0x0A` в старшем байте
+/// занимает биты 8..15, то есть поднимала **бит 9 (TG1)** и обнуляла код
+/// шины B. Осциллограф это и показал: TG1 высокий всю тёмную паузу
+/// (25 мкс перед слотом, 50 мкс на границе кадра), а на лампах слота 1
+/// в это время висел код 0 («9») с яркостью ~1%. Было ещё `0xAAAA` —
+/// там коды верные, но бит 9 тоже поднят.
+const DARK_WORD_U32: u32 = 0x00AA_00AA;
+/// Компиляторная страховка: в тёмном слове не должно быть ни одного строба
+/// (биты 8..10 в каждой половине) и оба ниббла должны быть кодом гашения.
+const _: () = assert!(DARK_WORD_U32 & 0x0700_0700 == 0, "TG в тёмном слове!");
+const _: () = assert!(
+    DARK_WORD_U32 & 0x00FF == 0x00AA && DARK_WORD_U32 >> 16 & 0x00FF == 0x00AA,
+    "код гашения в тёмном слове!"
+);
+/// Окно строба: 1024 слова = 806 мкс.
 const ON_WORDS: usize = 1024;
-const HOLD_WORDS: usize = 16;
-const SLOT_WORDS: usize = SETUP_WORDS + ON_WORDS + HOLD_WORDS; // 1056
-/// Хвост кадра: гарантированно тёмное состояние после третьего слота.
-const TAIL_WORDS: usize = 32;
-const FRAME_WORDS: usize = SLOT_WORDS * 3 + TAIL_WORDS; // 3200
-const FRAME_U32: usize = FRAME_WORDS / 2; // DMA пересылает 32-битные посылки
-const FRAME_BYTES: usize = FRAME_WORDS * 2; // 6400 B
-/// Поле size/length дескриптора — 12 бит, поэтому кадр не влезает целиком.
-const DESC_PER_FRAME: usize = 2;
-const DESC_BYTES: usize = FRAME_BYTES / DESC_PER_FRAME; // 3200 B < 4096
-const DESC_COUNT: usize = FRAME_COUNT * DESC_PER_FRAME;
+/// Один дескриптор окна = 128 слов (256 B). Восемь таких дескрипторов
+/// смотрят в один буфер слота — так цифры занимают 256 B вместо 2 KB.
+const ON_CHUNK_WORDS: usize = 128;
+const ON_CHUNKS: usize = ON_WORDS / ON_CHUNK_WORDS; // 8
 
-/// Сколько кадров в кольце. 3 — как просили; для боевого режима захочется 4+.
-const FRAME_COUNT: usize = 3;
+const SLOT_WORDS: usize = DARK_WORDS + ON_WORDS; // 1056
+const FRAME_WORDS: usize = SLOT_WORDS * 3 + DARK_WORDS; // 3200
 
-/// Стендовые тумблеры. На этом шаге не используются (данные всегда 0),
-/// но остаются, чтобы не менять API сервера.
+/// DMA пересылает 32-битные посылки (два 16-битных слова в каждой).
+const DARK_U32: usize = DARK_WORDS / 2; // 16
+const ON_U32: usize = ON_CHUNK_WORDS / 2; // 64
+
+const DARK_BYTES: usize = DARK_WORDS * 2; // 64 B
+const ON_BYTES: usize = ON_CHUNK_WORDS * 2; // 256 B
+
+/// На слот: один dark-дескриптор + 8 ON-дескрипторов; плюс хвостовой dark.
+const DESC_PER_SLOT: usize = 1 + ON_CHUNKS; // 9
+const DESC_COUNT: usize = DESC_PER_SLOT * 3 + 1; // 28
+
+/// Стендовые тумблеры (эндпоинты /display/*).
 pub static TEST_MODE: AtomicU8 = AtomicU8::new(0);
-pub static DISPLAY_ON: AtomicBool = AtomicBool::new(true);
+/// Маска теста: 0..5 — показывать цифру только на этой лампе, 6 — на всех.
+pub static TEST_LAMP: AtomicU8 = AtomicU8::new(6);
+/// Тестовый режим «только шина»: коды идут, стробы TG закрыты (лампы тёмные).
+pub static NO_STROBE: AtomicBool = AtomicBool::new(false);
+/// По умолчанию индикация ВЫКЛЮЧЕНА: после сброса все лампы погашены, пока
+/// не придёт `/display/on` или `/display/test?...`.
+///
+/// Так плата не уходит в crash-loop на «плохой» комбинации цифр (2/5/7),
+/// которую показывает обычное время сразу после бута: сначала диагностика,
+/// потом картинка.
+pub static DISPLAY_ON: AtomicBool = AtomicBool::new(false);
+/// Оставлен для совместимости API: в новой схеме «пустых» чанков нет,
+/// тьма между слотами зашита в сами дескрипторы.
 pub static NO_BLANK: AtomicBool = AtomicBool::new(false);
 
-/// Слово кадра: код ламп (0) + строб слота. `slot >= 3` — тёмный хвост.
-fn word_at(word_index: usize) -> u16 {
-    let slot = word_index / SLOT_WORDS;
-    if slot >= 3 {
-        return 0;
-    }
-    let off = word_index % SLOT_WORDS;
-    let strobe_on = off >= SETUP_WORDS && off < SETUP_WORDS + ON_WORDS;
-    if strobe_on {
-        1 << (TG_SHIFT as usize + slot)
-    } else {
-        0
-    }
-}
+// ---------------- заявка на новые цифры ----------------
+//
+// Задача готовит семплы и одной 32-битной записью публикует заявку.
+// ISR забирает её на границе кадра (`OUT_EOF`) и переписывает буферы слотов.
+// Поля: биты 0..7 / 8..15 / 16..23 — семплы слотов 0/1/2 (код A | код B << 4);
+// REQ_VALID — заявка есть; REQ_OFF — погасить все стробы.
+const REQ_VALID: u32 = 1 << 31;
+const REQ_OFF: u32 = 1 << 30;
+/// Гнать коды по шине, но не открывать стробы (лампы тёмные). Бисект:
+/// если плата «складывается» и в этом режиме — виноваты линии шины/входы
+/// дешифратора; если нет — цепь катодов/лампы.
+const REQ_NOSTROBE: u32 = 1 << 29;
+const REQ_MASK: u32 = 0x00FF_FFFF;
 
-/// Заполняет один кадр. В памяти лежат 32-битные посылки по два 16-битных
-/// слова; esp-hal документирует перестановку `[A,B,C,D] -> [B,A,D,C]`, поэтому
-/// дублируем слово в обе половины посылки — порядок внутри пары перестаёт
-/// иметь значение.
-fn fill_frame(frame: &mut [u32; FRAME_U32]) {
-    for (beat, cell) in frame.iter_mut().enumerate() {
-        let w = word_at(beat * 2) as u32;
-        *cell = w | (w << 16);
-    }
-}
+/// Последние применённые семплы (24 бита) или LAST_OFF, когда дисплей погашен.
+const LAST_OFF: u32 = 1 << 24;
 
-/// Кольцо DMA: дескрипторы + кадры. Живёт в статике, потому что DMA читает
-/// эту память после того, как задача отдала дескрипторы драйверу.
+static REQUEST: AtomicU32 = AtomicU32::new(0);
+static LAST_SAMPLES: AtomicU32 = AtomicU32::new(LAST_OFF);
+/// Открыты ли стробы в текущем содержимом буферов (для «только шина»).
+static STROBE_ON: AtomicBool = AtomicBool::new(true);
+
+// ---------------- диагностика ----------------
+static EOF_TICKS: AtomicU32 = AtomicU32::new(0);
+static EOF_DESC: AtomicU32 = AtomicU32::new(0);
+static RING_BASE: AtomicU32 = AtomicU32::new(0);
+static EOF_BAD_ADDR: AtomicU32 = AtomicU32::new(0);
+static APPLIED: AtomicU32 = AtomicU32::new(0);
+static REQUESTS: AtomicU32 = AtomicU32::new(0);
+
+/// Кольцо DMA: дескрипторы + маленькие буферы слотов. Живёт в .bss сразу,
+/// без `StaticCell::init(Ring::new())`: `init` принимает значение по значению,
+/// и временный `Ring` строился бы на стеке задачи.
 struct Ring {
     descs: [DmaDescriptor; DESC_COUNT],
-    frames: [[u32; FRAME_U32]; FRAME_COUNT],
+    /// Общий буфер всех тёмных промежутков (4 дескриптора).
+    dark: [u32; DARK_U32],
+    /// Буфер окна строба на каждый слот: все 1024 слова одинаковые.
+    on: [[u32; ON_U32]; 3],
 }
 
 impl Ring {
     const fn new() -> Self {
         Self {
             descs: [DmaDescriptor::EMPTY; DESC_COUNT],
-            frames: [[0; FRAME_U32]; FRAME_COUNT],
+            dark: [DARK_WORD_U32; DARK_U32],
+            on: [[DARK_WORD_U32; ON_U32]; 3],
         }
     }
 
-    /// Раскладывает кадры и замыкает дескрипторы в кольцо.
+    /// Раскладывает дескрипторы: dark, 8xON, dark, 8xON, dark, 8xON, tail.
+    /// `suc_eof` — только на хвостовом: один тик на кадр.
     fn build(&mut self) {
-        for frame in &mut self.frames {
-            fill_frame(frame);
-        }
-
         let base = self.descs.as_mut_ptr();
+        let dark = self.dark.as_mut_ptr().cast::<u8>();
         for i in 0..DESC_COUNT {
-            let frame = i / DESC_PER_FRAME;
-            let part = i % DESC_PER_FRAME;
+            let (buf, size, eof) = if i == DESC_COUNT - 1 {
+                (dark, DARK_BYTES, true)
+            } else {
+                let slot = i / DESC_PER_SLOT;
+                let part = i % DESC_PER_SLOT;
+                if part == 0 {
+                    (dark, DARK_BYTES, false)
+                } else {
+                    (self.on[slot].as_mut_ptr().cast::<u8>(), ON_BYTES, false)
+                }
+            };
             // Сырые указатели: собрать кольцо через &mut заимствования нельзя.
             let next = unsafe { base.add((i + 1) % DESC_COUNT) };
-            let buf = unsafe {
-                self.frames[frame]
-                    .as_mut_ptr()
-                    .cast::<u8>()
-                    .add(part * DESC_BYTES)
-            };
             let d = unsafe { &mut *base.add(i) };
-            // owner = DMA; EOF только на последнем дескрипторе кадра.
-            d.reset_for_tx(part == DESC_PER_FRAME - 1);
-            d.set_size(DESC_BYTES);
-            d.set_length(DESC_BYTES);
+            d.reset_for_tx(eof); // owner = DMA
+            d.set_size(size);
+            d.set_length(size);
             d.buffer = buf;
             d.next = next;
+        }
+    }
+
+    /// Заполняет буфер слота одним и тем же словом: код ламп + строб слота.
+    /// `inline(always)` обязательно: метод вызывается из ISR, а ISR живёт в
+    /// `.rwtext` (IRAM); отдельная копия в flash не переживёт запись OTA.
+    /// Запись через `write_volatile` в цикле, а не `fill`: никакого вызова
+    /// ROM-memset из прерывания, ровно 64 32-битных store, ~1 мкс.
+    #[inline(always)]
+    fn set_slot(&mut self, slot: usize, sample: u8, strobe: bool) {
+        let word = if strobe {
+            sample as u16 | (1 << (TG_SHIFT as usize + slot))
+        } else {
+            // «Только шина»: коды на месте, строб закрыт — ток через лампы не идёт.
+            sample as u16
+        } as u32;
+        let w = word | (word << 16);
+        for cell in self.on[slot].iter_mut() {
+            unsafe { core::ptr::write_volatile(cell, w) };
+        }
+    }
+
+    /// Полностью погасить все стробы (данные при этом не важны).
+    #[inline(always)]
+    fn blank_all(&mut self) {
+        for block in &mut self.on {
+            for cell in block.iter_mut() {
+                unsafe { core::ptr::write_volatile(cell, DARK_WORD_U32) };
+            }
         }
     }
 
@@ -158,20 +235,16 @@ impl Ring {
     }
 }
 
-/// Кольцо лежит в .bss сразу, а не инициализируется `StaticCell::init(Ring::new())`:
-/// `init` принимает значение по значению, и 19 KB временного `Ring` строились
-/// на стеке задачи (кадр 38 688 B при стеке 30 432 B) -> stack guard panic.
-/// Доступ только из `display_task`, которая запускается ровно один раз.
+/// Кольцо в .bss сразу: доступ только из задачи при старте и из ISR по
+/// границе кадра. Ссылка из задачи живёт только до `send()`.
 static mut RING: Ring = Ring::new();
 
-/// Диагностика ISR: тики кадра и адрес последнего дескриптора с EOF.
-static EOF_TICKS: AtomicU32 = AtomicU32::new(0);
-static EOF_DESC: AtomicU32 = AtomicU32::new(0);
-static RING_BASE: AtomicU32 = AtomicU32::new(0);
-static EOF_BAD_ADDR: AtomicU32 = AtomicU32::new(0);
-
-/// Тик кадра по `OUT_EOF`. Обработчик только читает `OUT_EOF_DES_ADDR`,
-/// обновляет счётчики и сбрасывает флаг: DMA не трогает и данные не меняет.
+/// Тик кадра по `OUT_EOF`: читает `OUT_EOF_DES_ADDR`, обновляет счётчики и,
+/// если есть заявка, переписывает буферы слотов ДО начала следующего кадра.
+///
+/// Почему это безопасно: `suc_eof` стоит на хвостовом dark-дескрипторе, так
+/// что ISR просыпается ровно на границе кадра. DMA в этот момент начинает
+/// 32 слова тьмы перед slot 0; буферы слотов никто не читает.
 /// `.rwtext` = IRAM: тик идёт и во время записи flash (OTA), когда кэш выключен.
 #[unsafe(link_section = ".rwtext")]
 extern "C" fn i2s1_eof_isr() {
@@ -187,6 +260,41 @@ extern "C" fn i2s1_eof_isr() {
     }
     EOF_DESC.store(addr, Ordering::Relaxed);
     EOF_TICKS.fetch_add(1, Ordering::Relaxed);
+
+    let req = REQUEST.swap(0, Ordering::Acquire);
+    if req & REQ_VALID != 0 {
+        let ring = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
+        let strobe = req & REQ_NOSTROBE == 0;
+        let new = if req & REQ_OFF != 0 {
+            LAST_OFF
+        } else {
+            req & REQ_MASK
+        };
+        let old = LAST_SAMPLES.load(Ordering::Relaxed);
+        // Переключение «только шина» меняет содержимое буферов, хотя семплы
+        // те же — поэтому это отдельный повод переписать слоты.
+        let strobe_changed = STROBE_ON.load(Ordering::Relaxed) != strobe;
+        if new != old || strobe_changed {
+            STROBE_ON.store(strobe, Ordering::Relaxed);
+            if new == LAST_OFF {
+                ring.blank_all();
+            } else {
+                // slot 0 пишем первым: до его окна остаётся меньше всего
+                // времени; остальные слоты читаются на ~0.85/1.7 мс позже.
+                for slot in 0..3 {
+                    let ns = (new >> (8 * slot)) & 0xFF;
+                    let os = (old >> (8 * slot)) & 0xFF;
+                    // после выключения восстанавливаем все слоты
+                    if strobe_changed || old == LAST_OFF || ns != os {
+                        ring.set_slot(slot, ns as u8, strobe);
+                    }
+                }
+            }
+            LAST_SAMPLES.store(new, Ordering::Relaxed);
+            APPLIED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     regs.int_clr().write(|w| w.out_eof().clear_bit_by_one());
 }
 
@@ -196,8 +304,8 @@ struct RingStart {
     start: *mut DmaDescriptor,
 }
 
-// SAFETY: RingStart живёт в статике задачи; дескрипторы и кадры не двигаются
-// и не освобождаются, пока трансфер (и задача) живы.
+// SAFETY: RingStart живёт в статике; дескрипторы и буферы не двигаются и не
+// освобождаются, пока трансфер (и задача) живы.
 unsafe impl DmaTxBuffer for RingStart {
     type View = ();
     type Final = ();
@@ -216,8 +324,32 @@ unsafe impl DmaTxBuffer for RingStart {
     fn from_view(_view: Self::View) {}
 }
 
-/// Экспериментальная задача: собрать кольцо, запустить DMA и больше его не
-/// трогать. Логика часов вернётся на следующем шаге.
+/// Что показать в текущей секунде: тест-режим или реальное время.
+/// `lamp` = Some(0..5) в тест-режиме оставляет цифру только на одной лампе.
+fn wanted_samples(mode: u8, epoch: u64, lamp: Option<u8>) -> [u8; 3] {
+    match display_core::test_samples_lamp(mode, epoch, lamp) {
+        Some(s) => s,
+        None => {
+            let c = clock_core::time::epoch_to_civil(epoch);
+            display_core::slot_samples(&display_core::hhmmss_digits(c.hour, c.min, c.sec))
+        }
+    }
+}
+
+/// 0..5 — конкретная лампа, всё остальное (в т.ч. 6) — все шесть.
+fn lamp_of(v: u8) -> Option<u8> {
+    if v < 6 { Some(v) } else { None }
+}
+
+fn encode_request(samples: [u8; 3]) -> u32 {
+    REQ_VALID
+        | samples[0] as u32
+        | (samples[1] as u32) << 8
+        | (samples[2] as u32) << 16
+}
+
+/// Задача индикации: собирает кольцо, запускает DMA, дальше только публикует
+/// заявки на новые цифры (раз в секунду / по смене тест-режима).
 #[embassy_executor::task]
 pub async fn display_task(
     i2s: peripherals::I2S1<'static>,
@@ -225,50 +357,68 @@ pub async fn display_task(
     pins: TxSixteenBits<'static>,
     ws: peripherals::GPIO3<'static>,
 ) -> ! {
-    // SAFETY: display_task — единственный пользователь RING (запускается один
-    // раз), поэтому эксклюзивная ссылка корректна. `addr_of_mut!` не создаёт
-    // промежуточной ссылки на `static mut`.
-    let ring = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
-    ring.build();
+    let mode = TEST_MODE.load(Ordering::Relaxed);
+    let on = DISPLAY_ON.load(Ordering::Relaxed);
+    let lamp = TEST_LAMP.load(Ordering::Relaxed);
+    let initial = if on {
+        wanted_samples(mode, clock::epoch_cached(), lamp_of(lamp))
+    } else {
+        [0; 3]
+    };
+
+    let descs_base = {
+        // SAFETY: display_task — единственный пользователь RING; ссылка
+        // заканчивается здесь, дальше кольцом владеют DMA и ISR.
+        let ring = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
+        ring.build();
+        if on {
+            for (slot, s) in initial.iter().enumerate() {
+                ring.set_slot(slot, *s, true);
+            }
+        }
+        let base = ring.descs.as_mut_ptr() as usize as u32;
+        // стартовая позиция LAST_SAMPLES = то, что уже записано в буферы
+        LAST_SAMPLES.store(
+            if on {
+                initial[0] as u32 | (initial[1] as u32) << 8 | (initial[2] as u32) << 16
+            } else {
+                LAST_OFF
+            },
+            Ordering::Relaxed,
+        );
+        base
+    };
+    RING_BASE.store(descs_base, Ordering::Relaxed);
 
     log::info!(
-        "display(exp): ring {} frames x {} words ({} B), {} desc x {} B, TG on lanes 8..10",
-        FRAME_COUNT,
+        "display: one looping frame, {} words ({} us, ~{} Hz), {} desc ({} B ON chunks), TG on lanes 8..10",
         FRAME_WORDS,
-        FRAME_BYTES,
+        FRAME_WORDS as u64 * 787 / 1000,
+        1_000_000_000u64 / (FRAME_WORDS as u64 * 787),
         DESC_COUNT,
-        DESC_BYTES,
-    );
-    log::info!(
-        "display(exp): expected slot {}.{} us, frame {}.{} us (~{} Hz)",
-        831,
-        5,
-        2519,
-        7,
-        396
+        ON_BYTES,
     );
 
-    let start = ring.start();
+    let start = {
+        let ring = unsafe { &mut *core::ptr::addr_of_mut!(RING) };
+        ring.start()
+    };
     let par = I2sParallel::new(i2s, dma, Rate::from_hz(SAMPLE_HZ), pins, ws);
 
     let xfer = match par.send(start) {
         Ok(xfer) => xfer,
         Err((e, _par, _buf)) => {
-            log::error!("display(exp): circular DMA start failed: {:?}", e);
+            log::error!("display: circular DMA start failed: {:?}", e);
             loop {
                 Timer::after_secs(1).await;
             }
         }
     };
 
-    log::info!("display(exp): circular DMA started, CPU is out of the data path");
-
-    // OUT_EOF = конец дескриптора с `suc_eof`, то есть один тик на кадр.
+    // OUT_EOF = конец хвостового dark-дескриптора, то есть граница кадра.
     // Порядок важен: `ChannelTx::new` погасил линию I2S1 на всех CPU, поэтому
-    // сначала чистим возможный pending и разрешаем источник, а `bind_handler`
-    // последним снова разрешает линию. `int_ena` недоступен через esp-hal —
-    // пишем через PAC.
-    RING_BASE.store(ring.descs.as_mut_ptr() as usize as u32, Ordering::Relaxed);
+    // сначала чистим possible pending, разрешаем источник, и только потом
+    // `bind_handler` снова разрешает линию. `int_ena` esp-hal наружу не отдаёт.
     let regs = unsafe { &*esp32::I2S1::ptr() };
     regs.int_clr().write(|w| w.out_eof().clear_bit_by_one());
     regs.int_ena().modify(|_, w| w.out_eof().set_bit());
@@ -276,41 +426,104 @@ pub async fn display_task(
         Interrupt::I2S1,
         InterruptHandler::new(i2s1_eof_isr, Priority::Priority1),
     );
-    log::info!("display(exp): OUT_EOF armed (frame tick, ISR at Priority1)");
+    log::info!("display: OUT_EOF armed (frame tick, ISR at Priority1)");
 
     hangdetect::beat(&hangdetect::FRAME);
 
+    let mut last_epoch = u64::MAX;
+    let mut last_mode = 0xFF;
+    let mut last_on = false;
+    let mut last_lamp = 0xFF;
+    let mut last_req = 0u32;
     let mut tick: u32 = 0;
-    let mut last = Instant::now();
-    let mut last_ticks = EOF_TICKS.load(Ordering::Relaxed);
-    let mut last_desc = 0u32;
+    let mut logged = Instant::now();
+    let mut logged_ticks = EOF_TICKS.load(Ordering::Relaxed);
+    let mut logged_applied = APPLIED.load(Ordering::Relaxed);
+    let mut logged_requests = REQUESTS.load(Ordering::Relaxed);
     loop {
-        Timer::after_millis(250).await;
+        // 50 мс: секунда меняется с задержкой не больше одного тика.
+        Timer::after_millis(50).await;
         hangdetect::beat(&hangdetect::FRAME);
+
+        let epoch = clock::epoch_cached();
+        let mode = TEST_MODE.load(Ordering::Relaxed);
+        let on = DISPLAY_ON.load(Ordering::Relaxed);
+        let lamp = TEST_LAMP.load(Ordering::Relaxed);
+        if epoch != last_epoch || mode != last_mode || on != last_on || lamp != last_lamp {
+            last_epoch = epoch;
+            last_mode = mode;
+            last_on = on;
+            last_lamp = lamp;
+            let req = if on {
+                let mut r = encode_request(wanted_samples(mode, epoch, lamp_of(lamp)));
+                if NO_STROBE.load(Ordering::Relaxed) {
+                    r |= REQ_NOSTROBE;
+                }
+                r
+            } else {
+                REQ_VALID | REQ_OFF
+            };
+            // Если предыдущая заявка ещё не применена — она просто
+            // перезапишется: лучше пропустить тик, чем показать смесь.
+            if req != last_req {
+                REQUEST.store(req, Ordering::Release);
+                REQUESTS.fetch_add(1, Ordering::Relaxed);
+                last_req = req;
+            }
+        }
+
         tick += 1;
-        if tick % 8 == 0 {
+        if tick % 40 == 0 {
             let now = Instant::now();
-            let elapsed_us = (now - last).as_micros().max(1) as u64;
+            let elapsed_us = (now - logged).as_micros().max(1);
             let ticks = EOF_TICKS.load(Ordering::Relaxed);
+            let applied = APPLIED.load(Ordering::Relaxed);
+            let requests = REQUESTS.load(Ordering::Relaxed);
             let addr = EOF_DESC.load(Ordering::Relaxed);
-            let hz = (ticks.wrapping_sub(last_ticks)) as u64 * 1_000_000 / elapsed_us;
+            let hz = ticks.wrapping_sub(logged_ticks) as u64 * 1_000_000 / elapsed_us;
+            // desc должен быть ровно +27 (хвостовой дескриптор) каждый кадр.
             let desc = addr.wrapping_sub(RING_BASE.load(Ordering::Relaxed))
                 / core::mem::size_of::<DmaDescriptor>() as u32;
-            // desc должно ползти 1,3,5 (или 2,4,0) — тогда тик = кадр.
+            // int_raw/int_ena/state: если тик когда-нибудь «схлопнется», по этим
+            // трём числам видно, виноват лишний источник прерывания (ena),
+            // незакрытый pending (raw) или вставший FIFO (state).
+            let raw = regs.int_raw().read().bits();
+            let ena = regs.int_ena().read().bits();
+            let state = regs.state().read().bits();
             log::info!(
-                "display(exp): alive, tx_idle={}, eof {} (~{} Hz), desc +{} (prev +{}), bad={}, test={}, on={}",
+                "display: alive, tx_idle={}, eof={} (~{} Hz), desc=+{}, applied={} (+{}), req={} (+{}), bad={}, mode={}, on={}, post={}ok/{}to, sending={}, raw={:08x}, ena={:08x}, st={:08x}",
                 xfer.is_done(),
                 ticks,
                 hz,
                 desc,
-                last_desc,
+                applied,
+                applied.wrapping_sub(logged_applied),
+                requests,
+                requests.wrapping_sub(logged_requests),
                 EOF_BAD_ADDR.load(Ordering::Relaxed),
-                TEST_MODE.load(Ordering::Relaxed),
-                DISPLAY_ON.load(Ordering::Relaxed),
+                mode,
+                on,
+                crate::logger::post_ok(),
+                crate::logger::post_timeouts(),
+                crate::logger::sending(),
+                raw,
+                ena,
+                state,
             );
-            last = now;
-            last_ticks = ticks;
-            last_desc = desc;
+            if ticks == logged_ticks {
+                // За целый интервал (2 с) ни одного EOF: DMA встал или ISR не
+                // вызывается. Отдельной строкой, чтобы это не потерялось.
+                log::error!(
+                    "display: НЕТ ТИКА КАДРА (eof не менялся), int_raw={:08x}, int_ena={:08x}, state={:08x}",
+                    raw,
+                    ena,
+                    state,
+                );
+            }
+            logged = now;
+            logged_ticks = ticks;
+            logged_applied = applied;
+            logged_requests = requests;
         }
     }
 }

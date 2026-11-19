@@ -128,6 +128,29 @@ async fn handle<'a>(
         None => (path, ""),
     };
 
+    // След для посмертной диагностики (rtcmark.rs): если обработка запроса
+    // повесит ядро, на следующем буте будет видно, какой путь обрабатывался.
+    if method == "POST" {
+        crate::rtcmark::mark(crate::rtcmark::T_HTTP, crate::rtcmark::H_POST);
+    } else {
+        let id = match path {
+            "/" => crate::rtcmark::H_ROOT,
+            "/status" => crate::rtcmark::H_STATUS,
+            "/logs" | "/api/logs" => crate::rtcmark::H_LOGS,
+            "/display/test" => crate::rtcmark::H_TEST,
+            "/display/off" | "/display/on" => crate::rtcmark::H_ONOFF,
+            "/ota" => crate::rtcmark::H_OTA,
+            "/revert" => crate::rtcmark::H_REVERT,
+            _ => crate::rtcmark::H_OTHER,
+        };
+        crate::rtcmark::mark(crate::rtcmark::T_HTTP, id);
+    }
+    // /api/status опрашивается страницей раз в секунду — его не логируем,
+    // иначе он вытеснит из ring-буфера всё полезное.
+    if path != "/api/status" {
+        log::info!("http: {} {}{}{}", method, path, if query.is_empty() { "" } else { "?" }, query);
+    }
+
     // POST принимается на два маршрута: сохранение Wi-Fi и ручная установка
     // времени (HTTP-путь, унаследованный от оригинала как запас без сети).
     if method == "POST" {
@@ -255,8 +278,20 @@ async fn handle<'a>(
             // лампах; cycle = цифры 1..9 по 1 с; code=0..15 сырой код на оба
             // дешифратора (без перемарки); rawcycle = перебор 0..15 по 1 с.
             let mut mode: u8 = 0;
+            // Маска ламп: если в этом запросе `lamp=` нет, показываем на всех
+            // шести. Иначе забытая маска от предыдущего теста делает вид, что
+            // «плохая» цифра перестала ломать плату.
+            let mut lamp_req: Option<u8> = None;
             for kv in query.split('&') {
                 match kv.split_once('=') {
+                    Some(("lamp", v)) => {
+                        // lamp=0..5 — только эта лампа (бисект тока), all или
+                        // отсутствие — все шесть.
+                        lamp_req = Some(match v {
+                            "all" => 6,
+                            _ => v.parse::<u8>().map(|l| l.min(6)).unwrap_or(6),
+                        });
+                    }
                     Some(("digit", v)) => {
                         if let Ok(d) = v.parse::<u8>() {
                             match d {
@@ -275,17 +310,36 @@ async fn handle<'a>(
                         }
                     }
                     Some(("rawcycle", _)) => mode = clock_core::display::TEST_RAW_CYCLE,
+                    // Вернуть часы. `?digit=0` — это НЕ выход из теста, а
+                    // «показать цифру 0 на всех лампах» (TEST_ZERO), поэтому
+                    // нужен явный выключатель. Без параметров — тоже часы.
+                    Some(("off", _)) | Some(("clock", _)) => mode = 0,
                     Some(("noblank", v)) => crate::display::NO_BLANK
+                        .store(v.parse::<u8>().unwrap_or(0) != 0, core::sync::atomic::Ordering::Relaxed),
+                    Some(("nostrobe", v)) => crate::display::NO_STROBE
                         .store(v.parse::<u8>().unwrap_or(0) != 0, core::sync::atomic::Ordering::Relaxed),
                     _ => {}
                 }
             }
+            let lamp = lamp_req.unwrap_or(6);
             crate::display::TEST_MODE.store(mode, core::sync::atomic::Ordering::Relaxed);
+            crate::display::TEST_LAMP.store(lamp, core::sync::atomic::Ordering::Relaxed);
+            // Уточняем след: конкретный тест-режим (маска 0x00FF — путь).
+            crate::rtcmark::mark(
+                crate::rtcmark::T_HTTP,
+                crate::rtcmark::H_TEST | (mode as u32) << 8,
+            );
             if mode != 0 {
                 crate::display::DISPLAY_ON.store(true, core::sync::atomic::Ordering::Relaxed);
             }
-            let mut msg: heapless::String<64> = String::new();
-            let _ = write!(msg, "display test mode = {}\n", mode);
+            let mut msg: heapless::String<160> = String::new();
+            let _ = write!(
+                msg,
+                "display test mode = {}, lamp = {}, nostrobe = {} (1 = коды на шине без строба, лампы тёмные)\n",
+                mode,
+                if lamp < 6 { lamp as u16 } else { 6 },
+                crate::display::NO_STROBE.load(core::sync::atomic::Ordering::Relaxed) as u8,
+            );
             respond(socket, "200 OK", "text/plain", msg.as_str()).await;
         }
         #[cfg(feature = "display")]
@@ -554,6 +608,16 @@ fn status_body(body: &mut String<4096>) {
         BOOT_CONFIRMED.load(Ordering::SeqCst),
         ROLLBACK_LATCHED.load(Ordering::SeqCst),
         OTA_BUSY.load(Ordering::SeqCst),
+    );
+    let (bod_ena, bod_thres, bod_rst, bod_det) = crate::power::brownout_state();
+    let _ = write!(
+        body,
+        "brownout_ena={}\nbrownout_thres={}\nbrownout_reset={}\nbrownout_det={}\nmin_3v3_mv={}\n",
+        bod_ena,
+        bod_thres,
+        bod_rst,
+        bod_det,
+        crate::power::min_v33_mv()
     );
 }
 

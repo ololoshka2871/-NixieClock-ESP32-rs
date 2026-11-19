@@ -29,6 +29,9 @@ fn panic(info: &PanicInfo) -> ! {
     let _ = write!(&mut msg, "{}", info.message());
     // Для тех, кто сидит с serial-консолью.
     esp_println::println!("PANIC: {}", msg.as_str());
+    // RTC slow memory пишется всегда и мгновенно: даже если запись в NVS
+    // повесит ядро (flash-операция), причина уедет в следующий бут.
+    crate::rtcmark::save_panic(msg.as_str());
     // Лучшее, что можно сделать без аллокаций и логгера:
     let saved = crate::settings::with_nvs(|nvs| nvs.set(&NS, &K_PANIC, msg.as_str()));
     esp_println::println!(

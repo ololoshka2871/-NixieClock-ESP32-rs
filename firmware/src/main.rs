@@ -67,10 +67,13 @@ mod flashcell;
 mod hangdetect;
 mod icmp;
 mod logger;
+mod power;
+mod rtcmark;
 mod sensors;
 mod server;
 mod settings;
 mod updater;
+mod uarttap;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -133,7 +136,17 @@ async fn main(spawner: Spawner) -> ! {
     // Что заставило чип перезапуститься: RWDT (зависание), brownout, panic,
     // software reset — критично для диагностики crash-loop'ов.
     log::info!("boot reason: {:?}", esp_hal::system::reset_reason());
+    // Счётчики в RTC: сколько подъёмов и сколько из них после BOD.
+    let brownout = matches!(
+        esp_hal::system::reset_reason(),
+        Some(esp_hal::rtc_cntl::SocResetReason::SysBrownOut)
+    );
+    let (boots, brownouts) = rtcmark::boot_tick(brownout);
+    log::info!("boot #{} (brown-out сбросов: {})", boots, brownouts);
     log::info!("cpu clock: {}", esp_hal::clock::cpu_clock());
+    // Brown-out детектор: включаем/печатаем до индикации, чтобы любая
+    // просадка питания под нагрузкой стала видна на следующем буте.
+    power::brownout_report();
 
     // Watchdog включаем сразу: завис/упал -> сброс -> откат неподтверждённого образа.
     let mut rtc = Rtc::new(peripherals.RTC_TIMER);
@@ -151,6 +164,8 @@ async fn main(spawner: Spawner) -> ! {
     crashlog::dump_previous_panic();
     // Снимок прошлой зависимости от independent-ISR (если был).
     hangdetect::report_prev();
+    // Крошки из RTC: последний HTTP-запрос и текст паники, если NVS не успела.
+    rtcmark::report();
 
     // После UART-прошивки otadata стёрта: crate считает «текущий» слот Factory,
     // и первый OTA может перетереть уже загруженный слот. Запоминаем
@@ -425,7 +440,16 @@ async fn status_task(stack: Stack<'static>) {
         match stack.config_v4() {
             Some(cfg) => {
                 icmp::set_our_ip(cfg.address.address().octets());
-                log::info!("hb: station up, ip={}", cfg.address);
+                // post/uart — телеметрия канала логов: если `post` не растёт,
+                // а `hb` печатается, значит исполнитель жив, а сеть/коллектор нет.
+                log::info!(
+                    "hb: station up, ip={}, post={}ok/{}to, sending={}, uart_lost={}B",
+                    cfg.address,
+                    logger::post_ok(),
+                    logger::post_timeouts(),
+                    logger::sending(),
+                    uarttap::DROPPED_BYTES.load(Ordering::Relaxed),
+                );
             }
             None => log::warn!("hb: no IP yet (wifi station not connected?)"),
         }
