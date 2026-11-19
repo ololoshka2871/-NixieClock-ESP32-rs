@@ -365,10 +365,12 @@ pub async fn adc_task(
                 (Some(v33), Some(v5), Some(v12)) => {
                     // В /status идёт среднее: одиночный минимум там бесполезен.
                     crate::power::note_v33(v33);
+                    let min33mv = rail(min33, codec::RATIO_3V3_X1000).unwrap_or(0);
+                    crate::power::set_window(v33, min33mv, low33, n33);
                     log::warn!(
                         "adc: под нагрузкой (1 с): 3v3 avg={} min={} low={}/{}; 5v avg={}; 12v avg={} min={} max={} [mode={} lamp={}]",
                         v33,
-                        rail(min33, codec::RATIO_3V3_X1000).unwrap_or(0),
+                        min33mv,
                         low33,
                         n33,
                         v5,

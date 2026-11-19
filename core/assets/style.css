@@ -121,3 +121,32 @@ pre {
     color: var(--dim);
     font-size: 13px
 }
+
+.ok {
+    color: var(--ok)
+}
+
+.warn {
+    color: var(--warn)
+}
+
+.err {
+    color: var(--err)
+}
+
+select {
+    background: #0d0b08;
+    color: var(--fg);
+    border: 1px solid #2c2820;
+    border-radius: 8px;
+    padding: 8px
+}
+
+#digits button {
+    min-width: 2.3em;
+    padding: 6px 0
+}
+
+#st_out {
+    grid-template-columns: 9ch 1fr
+}

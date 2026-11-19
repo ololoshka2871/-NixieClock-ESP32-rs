@@ -71,6 +71,23 @@ pub fn brownout_report() {
 /// Минимум 3.3 В за всё время работы (мВ, 0 = ещё не мерили).
 pub static MIN_V33_MV: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// Последнее окно измерения «под нагрузкой» (1 с, сэмпл каждые 2 мс):
+/// среднее и минимум 3.3 В, сколько сэмплов ниже 3.0 В и сколько всего.
+/// Видно в `/status` — браузерная самопроверка показывает питание по каждой
+/// цифре, не заставляя читать логи.
+pub static WIN_V33_AVG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static WIN_V33_MIN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static WIN_V33_LOW: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static WIN_V33_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+pub fn set_window(avg: u32, min: u32, low: u32, n: u32) {
+    use core::sync::atomic::Ordering;
+    WIN_V33_AVG.store(avg, Ordering::Relaxed);
+    WIN_V33_MIN.store(min, Ordering::Relaxed);
+    WIN_V33_LOW.store(low, Ordering::Relaxed);
+    WIN_V33_N.store(n, Ordering::Relaxed);
+}
+
 /// Запомнить очередное измерение 3.3 В (атомарный минимум).
 pub fn note_v33(mv: u32) {
     use core::sync::atomic::Ordering;

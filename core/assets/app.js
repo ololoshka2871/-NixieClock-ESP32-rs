@@ -73,3 +73,96 @@ $("ntp_btn").onclick = async () => {
         poll();
     } catch (e) { $("ntp_msg").textContent = "ошибка: " + e }
 };
+
+// ---- диагностика индикации, самопроверка, питание ----
+async function getText(u) { const r = await fetch(u, { cache: "no-store" }); return await r.text() }
+async function kv(u) {
+    const t = await getText(u), o = {};
+    t.split("\n").forEach(l => { const i = l.indexOf("="); if (i > 0) o[l.slice(0, i)] = l.slice(i + 1) });
+    return o;
+}
+const dMsg = $("d_msg");
+const digits = $("digits");
+for (let d = 0; d <= 9; d++) {
+    const b = document.createElement("button");
+    b.textContent = d;
+    b.className = "sec";
+    b.title = "цифра " + d + " на выбранной лампе";
+    b.onclick = () => testDigit(d);
+    digits.appendChild(b);
+}
+async function testDigit(d) {
+    const u = "/display/test?digit=" + d + "&lamp=" + $("lamp_sel").value + "&nostrobe=" + ($("nostrobe").checked ? 1 : 0);
+    dMsg.textContent = "…";
+    dMsg.textContent = (await getText(u)).trim();
+    pollDiag();
+}
+$("d_clock").onclick = async () => {
+    await getText("/display/test?off=1&nostrobe=0");
+    $("nostrobe").checked = false;
+    dMsg.textContent = (await getText("/display/on")).trim();
+    pollDiag();
+};
+$("d_off").onclick = async () => { dMsg.textContent = (await getText("/display/off")).trim(); pollDiag() };
+$("d_cycle").onclick = async () => { dMsg.textContent = (await getText("/display/test?cycle=1&lamp=6")).trim(); pollDiag() };
+$("d_raw").onclick = async () => { dMsg.textContent = (await getText("/display/test?rawcycle=1&lamp=6")).trim(); pollDiag() };
+
+async function selfTest(list, nostrobe) {
+    const out = $("st_out"), msg = $("st_msg");
+    out.innerHTML = "";
+    msg.textContent = "идёт: " + list.join(", ") + (nostrobe ? " (без строба)" : "") + "…";
+    const add = (k, v, cls) => {
+        const b = document.createElement("b"), s = document.createElement("span");
+        b.textContent = k; s.textContent = v; if (cls) s.className = cls;
+        out.append(b, s);
+    };
+    let bad = 0;
+    for (const d of list) {
+        let t0 = 0, t1 = null;
+        try { t0 = (await j("/api/status")).uptime } catch (e) { }
+        await getText("/display/test?digit=" + d + "&lamp=6&nostrobe=" + (nostrobe ? 1 : 0));
+        await new Promise(r => setTimeout(r, 2200));
+        try { t1 = (await j("/api/status")).uptime } catch (e) { }
+        if (t1 === null || t1 < t0) {
+            add("цифра " + d, "СБРОС ПЛАТЫ" + (t1 === null ? " (нет ответа)" : ""), "err");
+            bad++;
+            break;
+        }
+        const w = await kv("/status").catch(() => ({}));
+        const rails = w.win33_n && w.win33_n !== "0"
+            ? "3.3 В: avg " + (+w.win33_avg / 1000).toFixed(2) + ", мин " + (+w.win33_min / 1000).toFixed(2) +
+              ", ниже 3 В " + w.win33_low + "/" + w.win33_n
+            : "окно питания ещё не посчитано";
+        add("цифра " + d, "ok · " + rails, "ok");
+    }
+    await getText("/display/test?off=1&nostrobe=0");
+    await getText("/display/on");
+    msg.textContent = bad ? "ЕСТЬ СБРОС — смотри reset reason ниже" : "все прошли, часы включены";
+    pollDiag();
+}
+$("st_all").onclick = () => selfTest([1, 2, 3, 4, 5, 6, 7, 8, 9], false);
+$("st_bad").onclick = () => selfTest([2, 5, 7], false);
+$("st_bus").onclick = () => selfTest([2, 5, 7], true);
+
+const VOLTS = ["2.7", "2.8", "2.9", "3.0", "3.1", "3.2", "3.3", "3.4"];
+async function pollDiag() {
+    let s;
+    try { s = await kv("/status") } catch (e) { return }
+    const on = v => v === "true";
+    const v = (mv, d) => mv && mv !== "0" ? (+mv / 1000).toFixed(d || 2) + " В" : "нет данных";
+    $("p_boot").textContent = "#" + (s.boot_count || "?") + " за всё время";
+    $("p_bo").textContent = (s.brownout_count || "0") + " сбросов по питанию";
+    $("p_rst").textContent = s.reset_reason || "—";
+    $("p_bod").textContent = (on(s.brownout_ena) ? "включён" : "ВЫКЛЮЧЕН") +
+        " · порог " + (VOLTS[+s.brownout_thres || 0] || "?") + " В" + (on(s.brownout_det) ? " · DET!" : "");
+    $("p_min").textContent = v(s.min_3v3_mv);
+    $("p_win").textContent = s.win33_n && s.win33_n !== "0"
+        ? "avg " + v(s.win33_avg) + " · мин " + v(s.win33_min) + " · ниже 3 В " + s.win33_low + "/" + s.win33_n
+        : "нет (меряется в тест-режиме)";
+    $("p_post").textContent = (s.post_ok || "0") + " ok · " + (s.post_timeouts || "0") + " таймаутов";
+    $("p_disp").textContent = "mode " + (s.display_mode || "0") +
+        " · лампа " + (s.display_lamp === "6" ? "все" : (s.display_lamp || "?")) +
+        (on(s.display_on) ? " · вкл" : " · ВЫКЛ") + (on(s.nostrobe) ? " · без строба" : "");
+}
+pollDiag();
+setInterval(pollDiag, 3000);

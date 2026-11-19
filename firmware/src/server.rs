@@ -619,6 +619,42 @@ fn status_body(body: &mut String<4096>) {
         bod_det,
         crate::power::min_v33_mv()
     );
+    // Диагностика для страницы: счётчики в RTC, причина прошлого сброса и
+    // последнее окно измерения 3.3 В под нагрузкой.
+    let (boots, brownouts) = crate::rtcmark::counters();
+    let _ = write!(
+        body,
+        "boot_count={}\nbrownout_count={}\nreset_reason={:?}\n",
+        boots,
+        brownouts,
+        esp_hal::system::reset_reason()
+    );
+    let _ = write!(
+        body,
+        "win33_avg={}\nwin33_min={}\nwin33_low={}\nwin33_n={}\n",
+        crate::power::WIN_V33_AVG.load(Ordering::Relaxed),
+        crate::power::WIN_V33_MIN.load(Ordering::Relaxed),
+        crate::power::WIN_V33_LOW.load(Ordering::Relaxed),
+        crate::power::WIN_V33_N.load(Ordering::Relaxed),
+    );
+    let _ = write!(
+        body,
+        "post_ok={}\npost_timeouts={}\n",
+        logger::post_ok(),
+        logger::post_timeouts()
+    );
+    #[cfg(feature = "display")]
+    {
+        use crate::display::{DISPLAY_ON, NO_STROBE, TEST_LAMP, TEST_MODE};
+        let _ = write!(
+            body,
+            "display_mode={}\ndisplay_lamp={}\ndisplay_on={}\nnostrobe={}\n",
+            TEST_MODE.load(Ordering::Relaxed),
+            TEST_LAMP.load(Ordering::Relaxed),
+            DISPLAY_ON.load(Ordering::Relaxed),
+            NO_STROBE.load(Ordering::Relaxed),
+        );
+    }
 }
 
 async fn respond<'a>(socket: &mut TcpSocket<'a>, status: &str, content_type: &str, body: &str) {

@@ -110,13 +110,10 @@ pub static TEST_MODE: AtomicU8 = AtomicU8::new(0);
 pub static TEST_LAMP: AtomicU8 = AtomicU8::new(6);
 /// Тестовый режим «только шина»: коды идут, стробы TG закрыты (лампы тёмные).
 pub static NO_STROBE: AtomicBool = AtomicBool::new(false);
-/// По умолчанию индикация ВЫКЛЮЧЕНА: после сброса все лампы погашены, пока
-/// не придёт `/display/on` или `/display/test?...`.
-///
-/// Так плата не уходит в crash-loop на «плохой» комбинации цифр (2/5/7),
-/// которую показывает обычное время сразу после бута: сначала диагностика,
-/// потом картинка.
-pub static DISPLAY_ON: AtomicBool = AtomicBool::new(false);
+/// Индикация включена по умолчанию: после бута сразу показываем время.
+/// `/display/off` гасит лампы (и `/display/test?...` включает обратно),
+/// `/display/test?off=1` возвращает часы.
+pub static DISPLAY_ON: AtomicBool = AtomicBool::new(true);
 /// Оставлен для совместимости API: в новой схеме «пустых» чанков нет,
 /// тьма между слотами зашита в сами дескрипторы.
 pub static NO_BLANK: AtomicBool = AtomicBool::new(false);

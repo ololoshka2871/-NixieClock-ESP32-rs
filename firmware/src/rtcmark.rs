@@ -30,8 +30,14 @@ const PANIC_MAX: usize = 200;
 
 /// Счётчики в RTC (переживают brown-out/software reset): сколько раз плата
 /// поднималась и сколько из этих подъёмов было после срабатывания BOD.
+///
+/// MAGIC обязателен: RTC slow memory после холодного старта (новая плата,
+/// полная потеря питания) содержит мусор — без проверки первый бут печатал
+/// `boot #2838895972 (brown-out сбросов: 2002480577)`.
 const BOOTS_OFF: usize = 0x50;
 const BROWNOUTS_OFF: usize = 0x54;
+const COUNTERS_MAGIC_OFF: usize = 0x58;
+const COUNTERS_MAGIC: u32 = 0x424F_4F54; // "BOOT"
 
 /// Какие метки бывают. Значение — свободное поле.
 pub const T_HTTP: u32 = 1;
@@ -84,6 +90,11 @@ pub fn clear() {
 /// если `brownouts` перестал расти, починка сработала.
 pub fn boot_tick(brownout: bool) -> (u32, u32) {
     unsafe {
+        if rd(COUNTERS_MAGIC_OFF) != COUNTERS_MAGIC {
+            wr(BOOTS_OFF, 0);
+            wr(BROWNOUTS_OFF, 0);
+            wr(COUNTERS_MAGIC_OFF, COUNTERS_MAGIC);
+        }
         let boots = rd(BOOTS_OFF).wrapping_add(1);
         wr(BOOTS_OFF, boots);
         let mut brownouts = rd(BROWNOUTS_OFF);
@@ -92,6 +103,17 @@ pub fn boot_tick(brownout: bool) -> (u32, u32) {
             wr(BROWNOUTS_OFF, brownouts);
         }
         (boots, brownouts)
+    }
+}
+
+/// Текущие счётчики без инкремента (для /status).
+pub fn counters() -> (u32, u32) {
+    unsafe {
+        if rd(COUNTERS_MAGIC_OFF) != COUNTERS_MAGIC {
+            (0, 0)
+        } else {
+            (rd(BOOTS_OFF), rd(BROWNOUTS_OFF))
+        }
     }
 }
 
