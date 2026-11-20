@@ -26,54 +26,70 @@ pub const BLUE: Rgb = (0, 0, 255);
 /// CRGB::BlueViolet — знак «минус» в режиме температуры.
 pub const BLUE_VIOLET: Rgb = (138, 43, 226);
 
-/// Опорные точки колеса FastLED (HUE_RED=0, HUE_GREEN=96, HUE_BLUE=160).
-const WHEEL: [(u8, Rgb); 9] = [
-    (0, (255, 0, 0)),
-    (32, (255, 64, 0)),
-    (64, (255, 255, 0)),
-    (96, (0, 255, 0)),
-    (128, (0, 255, 128)),
-    (160, (0, 0, 255)),
-    (192, (128, 0, 255)),
-    (224, (255, 0, 192)),
-    (255, (255, 0, 64)),
-];
+/// FastLED `hsv2rgb_rainbow()` — восемь секторов по 32 hue-единицы.
+///
+/// Это даёт именно тот круг, который был в оригинале: 0 красный, 96 зелёный,
+/// 160 синий. Переход 255→0 остаётся плавным, потому что последний шаг колеса
+/// уже почти красный, а не произвольная точка палитры.
+const HUE_THIRD_SCALE: u8 = 85;
+const HUE_TWO_THIRDS_SCALE: u8 = 170;
 
-/// HSV как в FastLED: hue 0..255 (0 красный, 96 зелёный, 160 синий),
-/// s/v 0..255. Сатурация — подмешивание белого, значение — общая яркость.
-pub fn hsv2rgb(h: u8, s: u8, v: u8) -> Rgb {
-    if v == 0 {
-        return BLACK;
-    }
-    let base = wheel(h);
-    let s = s as u32;
-    let v = v as u32;
-    let mix = |c: u8| -> u8 {
-        let tinted = (c as u32 * s + 255 * (255 - s)) / 255;
-        (tinted * v / 255) as u8
-    };
-    (mix(base.0), mix(base.1), mix(base.2))
-}
+pub fn hsv2rgb(hue: u8, saturation: u8, value: u8) -> Rgb {
+    let offset8 = (hue & 0x1F) << 3;
+    let third = scale8(offset8, HUE_THIRD_SCALE);
 
-/// Цвет колеса без насыщения/яркости (кусочно-линейно между опорами).
-fn wheel(h: u8) -> Rgb {
-    let mut prev = WHEEL[0];
-    for &next in WHEEL.iter().skip(1) {
-        if h <= next.0 {
-            let span = (next.0 - prev.0) as u32;
-            let t = (h.saturating_sub(prev.0)) as u32;
-            let lerp = |a: u8, b: u8| -> u8 {
-                (a as u32 + ((b as i32 - a as i32) * t as i32) as u32 / span) as u8
-            };
-            return (lerp(prev.1 .0, next.1 .0), lerp(prev.1 .1, next.1 .1), lerp(prev.1 .2, next.1 .2));
+    let (mut r, mut g, mut b) = match (hue & 0x80, hue & 0x40, hue & 0x20) {
+        (0, 0, 0) => (255 - third, third, 0),
+        (0, 0, 0x20) => (171, 85 + third, 0),
+        (0, 0x40, 0) => {
+            let twothirds = scale8(offset8, HUE_TWO_THIRDS_SCALE);
+            (171 - twothirds, 170 + third, 0)
         }
-        prev = next;
+        (0, 0x40, 0x20) => (0, 255 - third, third),
+        (0x80, 0, 0) => {
+            let twothirds = scale8(offset8, HUE_TWO_THIRDS_SCALE);
+            (0, 171 - twothirds, 85 + twothirds)
+        }
+        (0x80, 0, 0x20) => (third, 0, 255 - third),
+        (0x80, 0x40, 0) => (85 + third, 0, 171 - third),
+        _ => (170 + third, 0, 85 - third),
+    };
+
+    if saturation != 255 {
+        if saturation == 0 {
+            return (255, 255, 255);
+        }
+        let desat = scale8_video(255 - saturation, 255 - saturation);
+        let satscale = 255 - desat;
+        r = scale8(r, satscale);
+        g = scale8(g, satscale);
+        b = scale8(b, satscale);
+        r += desat;
+        g += desat;
+        b += desat;
     }
-    next_or_last()
+
+    if value != 255 {
+        let value = scale8_video(value, value);
+        if value == 0 {
+            return BLACK;
+        }
+        r = scale8(r, value);
+        g = scale8(g, value);
+        b = scale8(b, value);
+    }
+
+    (r, g, b)
 }
 
-fn next_or_last() -> Rgb {
-    WHEEL[WHEEL.len() - 1].1
+/// FastLED fixed `scale8()`: x * (scale + 1) / 256.
+fn scale8(x: u8, scale: u8) -> u8 {
+    ((x as u16 * (scale as u16 + 1)) >> 8) as u8
+}
+
+/// FastLED `scale8_video()`: ненулевое значение не схлопывается в 0.
+fn scale8_video(x: u8, scale: u8) -> u8 {
+    (((x as u16 * scale as u16) >> 8) as u8) + if x != 0 && scale != 0 { 1 } else { 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +491,7 @@ mod tests {
     fn digits_temp_hundredths() {
         assert_eq!(temp_digits(Some(30_870)), [BLANK, BLANK, 3, 0, 8, 7]);
         assert_eq!(temp_digits(Some(30_860)), [BLANK, BLANK, 3, 0, 8, 6]);
+        assert_eq!(temp_digits(Some(29_250)), [BLANK, BLANK, 2, 9, 2, 5]);
         assert_eq!(temp_digits(Some(-4_500)), [BLANK, BLANK, BLANK, 4, 5, 0]);
         assert_eq!(temp_digits(Some(5_000)), [BLANK, BLANK, BLANK, 5, 0, 0]);
         assert_eq!(temp_digits(None), [BLANK; 6]);
@@ -549,6 +566,32 @@ mod tests {
         // полный оборот возвращает к красному
         let f_end = clock_effect(BLACK, EFFECT_WHEEL, WHEEL_PERIOD_MS);
         assert_eq!(f_end[0], RED);
+    }
+
+    #[test]
+    fn wheel_has_no_color_jump() {
+        fn max_delta(a: Rgb, b: Rgb) -> i32 {
+            (a.0 as i32 - b.0 as i32)
+                .abs()
+                .max((a.1 as i32 - b.1 as i32).abs())
+                .max((a.2 as i32 - b.2 as i32).abs())
+        }
+
+        let mut worst = 0;
+        let mut prev = hsv2rgb(0, 255, 255);
+        for h in 1..=255 {
+            let next = hsv2rgb(h, 255, 255);
+            worst = worst.max(max_delta(prev, next));
+            prev = next;
+        }
+
+        // FastLED на каждом шаге hue двигает каналы маленькими порциями.
+        // 85/32 ≈ 2,6, плюс целочисленные ступеньки scale8().
+        assert!(worst <= 8, "прыжок цвета на шаге колеса: {}", worst);
+
+        // Именно этот стык видел пользователь: фиолетовый/красный в конце круга.
+        let seam = max_delta(hsv2rgb(255, 255, 255), hsv2rgb(0, 255, 255));
+        assert!(seam <= 8, "стык 255→0: {}", seam);
     }
 
     #[test]

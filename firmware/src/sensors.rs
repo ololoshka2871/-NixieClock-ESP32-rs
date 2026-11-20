@@ -38,7 +38,7 @@ use clock_core::sensors as codec;
 /// Текущие показания датчиков. None = ещё не измерено/датчик не отвечает.
 #[derive(Clone, Copy)]
 pub struct SensorData {
-    /// DS18x20, миллиградусы Цельсия.
+    /// DS18x20, микро-°C (DS18B20 имеет разрешение 1/16 °C = 62 500 микро-°C).
     pub temp_mc: Option<i32>,
     /// MH-Z19 CO2, ppm.
     pub co2_ppm: Option<u16>,
@@ -69,14 +69,15 @@ pub static SENSORS: Mutex<CriticalSectionRawMutex, SensorData> = Mutex::new(Sens
 
 /// Зеркала для кадрового движка индикации и подсветки: мьютекс `SENSORS` там
 /// не взять (кадр рисуется в тесном цикле), поэтому значения дублируются в
-/// атомиках. Сентинелы: `i32::MIN` — температуры нет, `-1` — CO2 нет.
+/// атомиках. `TEMP_MC` — **milli-°C** (DS18x20 отдаёт микро-°C, индикации нужна
+/// шкала `" % 5d"`). Сентинелы: `i32::MIN` — температуры нет, `-1` — CO2 нет.
 static TEMP_MC: AtomicI32 = AtomicI32::new(i32::MIN);
 static CO2_PPM: AtomicI32 = AtomicI32::new(-1);
 
 pub fn temp_mc_now() -> Option<i32> {
     match TEMP_MC.load(Ordering::Relaxed) {
         i32::MIN => None,
-        v => Some(v),
+        mc => Some(mc),
     }
 }
 
@@ -222,7 +223,12 @@ pub async fn onewire_task(pin: GPIO4<'static>) {
             ),
         }
         SENSORS.lock().await.temp_mc = temp_mc;
-        TEMP_MC.store(temp_mc.unwrap_or(i32::MIN), Ordering::Relaxed);
+        // DS18x20 отдаёт микро-°C. TEMP_MC нужен milli-°C: temp_digits/`" % 5d"`
+        // и temp_leds работают именно в этой шкале.
+        TEMP_MC.store(
+            temp_mc.map(|mc| mc / 1_000).unwrap_or(i32::MIN),
+            Ordering::Relaxed,
+        );
     }
 }
 
