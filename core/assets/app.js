@@ -27,7 +27,10 @@ async function poll() {
         $("led_color").textContent = s.led_color || "—";
         $("led_month").textContent = s.led_color_month || "—";
         $("led_effect").textContent = s.led_effect || "—";
+        $("led_freq").textContent = (s.led_freq_pct == null ? "—" : s.led_freq_pct + " %");
+        $("led_amp").textContent = (s.led_amp_pct == null ? "—" : s.led_amp_pct + " %");
         $("led_mode").textContent = s.mode || "—";
+        syncEffectTuning(s);
         if (!ledTouched && document.activeElement !== $("led_pick")) {
             $("led_pick").value = (s.led_color_set && s.led_color) ? s.led_color : (s.led_color_month || "#000000");
         }
@@ -198,13 +201,61 @@ $("led_reset").onclick = async () => {
         poll();
     } catch (e) { $("led_msg").textContent = "ошибка: " + e }
 };
+// ---- частота и амплитуда подсветки ----
+let ledFxTouched = false;
+let ledTuningTouched = false;
+const ledFx = $("led_fx");
+const ledFreq = $("led_freq_in");
+const ledAmp = $("led_amp_in");
+
+function syncLocalTuning() {
+    $("led_freq_out").textContent = ledFreq.value + "%";
+    $("led_amp_out").textContent = ledAmp.value + "%";
+    const fx = ledFx.value;
+    $("led_freq_label").textContent = fx === "wheel" ? "скорость колеса" : "частота";
+    $("led_amp_label").textContent = fx === "wheel" ? "максимальная яркость" : "амплитуда";
+    ledFreq.disabled = fx === "off";
+    ledAmp.disabled = fx === "off";
+}
+
+function syncEffectTuning(s) {
+    if (!ledFxTouched && document.activeElement !== ledFx) {
+        ledFx.value = s.led_effect || "off";
+    }
+    syncLocalTuning();
+    if (!ledTuningTouched) {
+        if (s.led_freq_pct != null && document.activeElement !== ledFreq) {
+            ledFreq.value = String(s.led_freq_pct);
+            $("led_freq_out").textContent = ledFreq.value + "%";
+        }
+        if (s.led_amp_pct != null && document.activeElement !== ledAmp) {
+            ledAmp.value = String(s.led_amp_pct);
+            $("led_amp_out").textContent = ledAmp.value + "%";
+        }
+    }
+}
+
+ledFx.addEventListener("change", () => { ledFxTouched = true; syncLocalTuning(); $("led_msg").textContent = "" });
+ledFreq.addEventListener("input", () => { ledTuningTouched = true; $("led_freq_out").textContent = ledFreq.value + "%" });
+ledAmp.addEventListener("input", () => { ledTuningTouched = true; $("led_amp_out").textContent = ledAmp.value + "%" });
+syncLocalTuning();
+
 $("led_fx_apply").onclick = async () => {
-    const effect = $("led_fx").value;
+    const effect = ledFx.value;
+    const payload = { effect };
+    if (effect !== "off") {
+        payload.freq_pct = parseInt(ledFreq.value, 10);
+        payload.amp_pct = parseInt(ledAmp.value, 10);
+    }
     $("led_msg").textContent = "сохраняю…";
     try {
-        const r = await fetch("/api/led/effect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ effect }) });
+        const r = await fetch("/api/led/effect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         const k = await r.json();
-        $("led_msg").textContent = k.status === "saved" ? ("эффект: " + k.effect) : ("ошибка: " + (k.error || r.status));
+        $("led_msg").textContent = k.status === "saved"
+            ? ("эффект: " + k.effect + ", частота: " + k.freq_pct + " %, амплитуда: " + k.amp_pct + " %")
+            : ("ошибка: " + (k.error || r.status));
+        ledFxTouched = false;
+        ledTuningTouched = false;
         poll();
     } catch (e) { $("led_msg").textContent = "ошибка: " + e }
 };

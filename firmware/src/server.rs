@@ -284,6 +284,8 @@ async fn handle<'a>(
                 led_color_set: saved.is_some(),
                 led_color_month: month_hex.as_str(),
                 led_effect: clock_core::led::effect_name(crate::settings::led_effect()),
+                led_freq_pct: crate::settings::led_freq_pct(),
+                led_amp_pct: crate::settings::led_amp_pct(),
                 mode: crate::ui::mode_name(crate::ui::mode()),
             };
             let _ = write!(body, "{}", snap);
@@ -826,10 +828,12 @@ async fn handle_color_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
     respond(socket, "200 OK", "application/json", msg.as_str()).await;
 }
 
-/// POST /api/led/effect: {"effect":"off|breathing|wheel|wave"}.
+/// POST /api/led/effect: {"effect":"off|breathing|wheel|wave"} и опционально
+/// {"freq_pct":10..200,"amp_pct":0..100}. Частота умножает скорость эффекта,
+/// амплитуда ограничивает максимальную яркость выбранного цвета/колеса.
 async fn handle_effect_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
     let text = core::str::from_utf8(raw).unwrap_or("");
-    let e = match clock_core::settings::parse_effect_json(text) {
+    let update = match clock_core::settings::parse_effect_json(text) {
         Ok(v) => v,
         Err(err) => {
             log::warn!("эффект: rejected: {}", err);
@@ -839,16 +843,18 @@ async fn handle_effect_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
             return;
         }
     };
-    if let Err(err) = crate::settings::save_effect(e) {
+    if let Err(err) = crate::settings::save_effect(update) {
         log::error!("эффект: NVS save failed: {}", err);
         respond(socket, "500 Internal Server Error", "text/plain", "nvs write failed\n").await;
         return;
     }
-    let mut msg: String<96> = String::new();
+    let mut msg: String<128> = String::new();
     let _ = write!(
         msg,
-        "{{\"status\":\"saved\",\"effect\":\"{}\"}}\n",
-        clock_core::led::effect_name(e)
+        "{{\"status\":\"saved\",\"effect\":\"{}\",\"freq_pct\":{},\"amp_pct\":{}}}\n",
+        clock_core::led::effect_name(update.effect),
+        crate::settings::led_freq_pct(),
+        crate::settings::led_amp_pct()
     );
     respond(socket, "200 OK", "application/json", msg.as_str()).await;
 }

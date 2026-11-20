@@ -319,6 +319,15 @@ pub const BREATH_PERIOD_MS: u32 = 4_000;
 pub const WHEEL_PERIOD_MS: u32 = 24_000;
 pub const WAVE_PERIOD_MS: u32 = 3_000;
 
+/// Пользовательская настройка эффектов. Частота — процент от базовой скорости,
+/// амплитуда — максимальная яркость эффекта относительно выбранного цвета.
+pub const FREQ_PCT_MIN: u8 = 10;
+pub const FREQ_PCT_MAX: u8 = 200;
+pub const FREQ_PCT_DEFAULT: u8 = 100;
+pub const AMP_PCT_MIN: u8 = 0;
+pub const AMP_PCT_MAX: u8 = 100;
+pub const AMP_PCT_DEFAULT: u8 = 100;
+
 pub fn effect_name(e: u8) -> &'static str {
     match e {
         EFFECT_BREATHING => "breathing",
@@ -368,29 +377,62 @@ fn scale(c: Rgb, k: f32) -> Rgb {
     )
 }
 
+/// Кадр подсветки часов: статический цвет или один из эффектов (настройки по
+/// умолчанию; совместимость со старым вызовом).
+pub fn clock_effect(base: Rgb, effect: u8, t_ms: u32) -> [Rgb; LEDS] {
+    clock_effect_tuned(
+        base,
+        effect,
+        t_ms,
+        FREQ_PCT_DEFAULT,
+        AMP_PCT_DEFAULT,
+    )
+}
+
+/// Период эффекта при пользовательской частоте в процентах от базовой скорости.
+fn effect_period(base_ms: u32, freq_pct: u8) -> u32 {
+    let f = freq_pct.clamp(FREQ_PCT_MIN, FREQ_PCT_MAX) as u64;
+    ((base_ms as u64 * 100) / f).max(1) as u32
+}
+
 /// Кадр подсветки часов: статический цвет или один из эффектов.
 /// `t_ms` — время с начала работы (монотонные миллисекунды).
-pub fn clock_effect(base: Rgb, effect: u8, t_ms: u32) -> [Rgb; LEDS] {
+/// `freq_pct` — скорость 10..200 % от базового периода; `amp_pct` — максимальная
+/// яркость 0..100 % от выбранного цвета (для колеса это яркость HSV-полосы).
+pub fn clock_effect_tuned(
+    base: Rgb,
+    effect: u8,
+    t_ms: u32,
+    freq_pct: u8,
+    amp_pct: u8,
+) -> [Rgb; LEDS] {
+    let freq_pct = freq_pct.clamp(FREQ_PCT_MIN, FREQ_PCT_MAX);
+    let amp_pct = amp_pct.clamp(AMP_PCT_MIN, AMP_PCT_MAX);
+    let max_brightness = amp_pct as f32 / 100.0;
+
     match effect {
         EFFECT_BREATHING => {
-            let ph = (t_ms % BREATH_PERIOD_MS) as f32 / BREATH_PERIOD_MS as f32 * 6.28318531;
-            // 0.10 .. 1.00: почти гасит и разгорается
-            let k = 0.55 + 0.45 * sinf(ph);
+            let period = effect_period(BREATH_PERIOD_MS, freq_pct);
+            let ph = (t_ms % period) as f32 / period as f32 * 6.28318531;
+            // 0.10 .. 1.00: почти гасит и разгорается, затем амплитуда-яркость.
+            let k = (0.55 + 0.45 * sinf(ph)) * max_brightness;
             [scale(base, k); LEDS]
         }
         EFFECT_WHEEL => {
+            let period = effect_period(WHEEL_PERIOD_MS, freq_pct);
             // колесо FastLED: hue 0..255 за полный оборот
-            let h = (((t_ms % WHEEL_PERIOD_MS) * 255) / WHEEL_PERIOD_MS) as u8;
-            [hsv2rgb(h, 255, 255); LEDS]
+            let h = (((t_ms % period) * 255) / period) as u8;
+            [scale(hsv2rgb(h, 255, 255), max_brightness); LEDS]
         }
         EFFECT_WAVE => {
-            let ph = (t_ms % WAVE_PERIOD_MS) as f32 / WAVE_PERIOD_MS as f32 * 6.28318531;
+            let period = effect_period(WAVE_PERIOD_MS, freq_pct);
+            let ph = (t_ms % period) as f32 / period as f32 * 6.28318531;
             core::array::from_fn(|i| {
                 let s = 0.5 + 0.5 * sinf(ph + i as f32 * 3.14159265 / 3.0);
-                scale(base, 0.30 + 0.70 * s)
+                scale(base, (0.30 + 0.70 * s) * max_brightness)
             })
         }
-        _ => [base; LEDS],
+        _ => [scale(base, max_brightness); LEDS],
     }
 }
 
@@ -608,5 +650,47 @@ mod tests {
             assert_eq!(effect_from_name(effect_name(e)), Some(e));
         }
         assert_eq!(effect_from_name("nope"), None);
+    }
+
+    #[test]
+    fn tuning_period_changes_with_frequency_pct() {
+        assert_eq!(effect_period(BREATH_PERIOD_MS, 100), 4_000);
+        assert_eq!(effect_period(BREATH_PERIOD_MS, 50), 8_000);
+        assert_eq!(effect_period(BREATH_PERIOD_MS, 10), 40_000);
+        assert_eq!(effect_period(WHEEL_PERIOD_MS, 200), 12_000);
+        assert_eq!(effect_period(WAVE_PERIOD_MS, 200), 1_500);
+    }
+
+    #[test]
+    fn tuning_changes_effect_phase_speed() {
+        let c = (200u8, 0u8, 0u8);
+        let normal = clock_effect_tuned(c, EFFECT_BREATHING, 3_000, 100, 100);
+        let slow = clock_effect_tuned(c, EFFECT_BREATHING, 3_000, 50, 100);
+        // При периоде 8 с точка t=3000 ещё на подъёме, а при 4 с уже на спаде.
+        assert!(slow[0].0 > normal[0].0, "частота 50 % должна отставать: {normal:?} {slow:?}");
+    }
+
+    #[test]
+    fn amplitude_caps_maximum_brightness() {
+        let c = (255u8, 128u8, 64u8);
+
+        let full = clock_effect_tuned(BLACK, EFFECT_WHEEL, 0, 100, 100);
+        assert_eq!(full[0], RED);
+
+        let half = clock_effect_tuned(BLACK, EFFECT_WHEEL, 0, 100, 50);
+        assert!(120 <= half[0].0 && half[0].0 <= 130, "колесо 50 %: {:?}", half[0]);
+        assert_eq!(half[0].1, 0);
+        assert_eq!(half[0].2, 0);
+
+        let off = clock_effect_tuned(BLACK, EFFECT_WHEEL, 0, 100, 0);
+        assert_eq!(off[0], BLACK);
+
+        let static_half = clock_effect_tuned(c, EFFECT_OFF, 0, 100, 50);
+        assert!(120 <= static_half[0].0 && static_half[0].0 <= 130);
+        assert!(60 <= static_half[0].1 && static_half[0].1 <= 70);
+
+        let full_wave = clock_effect_tuned(c, EFFECT_WAVE, 500, 100, 100);
+        let half_wave = clock_effect_tuned(c, EFFECT_WAVE, 500, 100, 50);
+        assert!(half_wave[0].0 < full_wave[0].0 && half_wave[0].0 > 0);
     }
 }

@@ -113,6 +113,10 @@ pub struct StatusSnapshot<'a> {
     pub led_color_month: &'a str,
     /// Эффект подсветки часов: off|breathing|wheel|wave.
     pub led_effect: &'a str,
+    /// Пользовательская частота эффекта: 10..200 % от базовой скорости.
+    pub led_freq_pct: u8,
+    /// Амплитуда эффекта: 0..100 % максимальной яркости подсветки.
+    pub led_amp_pct: u8,
     /// Текущий режим индикации: часы|CO2|температура|дата.
     pub mode: &'a str,
 }
@@ -188,11 +192,13 @@ impl StatusSnapshot<'_> {
         )?;
         write!(
             out,
-            ",\"led_color\":\"{}\",\"led_color_set\":{},\"led_color_month\":\"{}\",\"led_effect\":\"{}\",\"mode\":\"{}\"",
+            ",\"led_color\":\"{}\",\"led_color_set\":{},\"led_color_month\":\"{}\",\"led_effect\":\"{}\",\"led_freq_pct\":{},\"led_amp_pct\":{},\"mode\":\"{}\"",
             self.led_color,
             self.led_color_set,
             self.led_color_month,
             self.led_effect,
+            self.led_freq_pct,
+            self.led_amp_pct,
             self.mode,
         )?;
         out.write_str("}")
@@ -308,12 +314,14 @@ mod tests {
             led_color_set: false,
             led_color_month: "#a300cc",
             led_effect: "off",
+            led_freq_pct: 100,
+            led_amp_pct: 100,
             mode: "часы",
         };
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"mode\":\"часы\"}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"led_freq_pct\":100,\"led_amp_pct\":100,\"mode\":\"часы\"}"
         );
         let s2 = StatusSnapshot {
             ip: None,

@@ -253,10 +253,34 @@ pub fn parse_color_json(body: &str) -> Result<LedColorUpdate, &'static str> {
     Err("нет поля hex, reset или r/g/b")
 }
 
-/// Разбор `{"effect":"off|breathing|wheel|wave"}`.
-pub fn parse_effect_json(body: &str) -> Result<u8, &'static str> {
+/// Разбор `{"effect":"off|breathing|wheel|wave"}` и опциональных
+/// `{"freq_pct":10..200,"amp_pct":0..100}`. Отсутствие полей означает
+/// «сохранить текущую настройку без изменений».
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectUpdate {
+    pub effect: u8,
+    pub freq_pct: Option<u8>,
+    pub amp_pct: Option<u8>,
+}
+
+fn parse_pct(body: &str, key: &str, min: u8, max: u8) -> Result<Option<u8>, &'static str> {
+    match json_int_value(body, key) {
+        None => Ok(None),
+        Some(v) => {
+            if v < min as i32 || v > max as i32 {
+                return Err("частота/амплитуда вне допустимого диапазона");
+            }
+            Ok(Some(v as u8))
+        }
+    }
+}
+
+pub fn parse_effect_json(body: &str) -> Result<EffectUpdate, &'static str> {
     let name = json_str_value(body, "effect").ok_or("нет поля effect")?;
-    crate::led::effect_from_name(name.trim()).ok_or("effect: off|breathing|wheel|wave")
+    let effect = crate::led::effect_from_name(name.trim()).ok_or("effect: off|breathing|wheel|wave")?;
+    let freq_pct = parse_pct(body, "freq_pct", crate::led::FREQ_PCT_MIN, crate::led::FREQ_PCT_MAX)?;
+    let amp_pct = parse_pct(body, "amp_pct", crate::led::AMP_PCT_MIN, crate::led::AMP_PCT_MAX)?;
+    Ok(EffectUpdate { effect, freq_pct, amp_pct })
 }
 
 #[cfg(test)]
@@ -287,12 +311,40 @@ mod led_json_tests {
 
     #[test]
     fn effect_names() {
-        assert_eq!(parse_effect_json("{\"effect\":\"off\"}"), Ok(0));
-        assert_eq!(parse_effect_json("{\"effect\":\"breathing\"}"), Ok(1));
-        assert_eq!(parse_effect_json("{\"effect\":\"wheel\"}"), Ok(2));
-        assert_eq!(parse_effect_json("{\"effect\":\"wave\"}"), Ok(3));
-        assert!(parse_effect_json("{\"effect\":\"rainbow\"}").is_err());
+        assert_eq!(
+            parse_effect_json(r#"{"effect":"off"}"#),
+            Ok(EffectUpdate { effect: 0, freq_pct: None, amp_pct: None }),
+        );
+        assert_eq!(
+            parse_effect_json(r#"{"effect":"breathing"}"#),
+            Ok(EffectUpdate { effect: 1, freq_pct: None, amp_pct: None }),
+        );
+        assert_eq!(
+            parse_effect_json(r#"{"effect":"wheel"}"#),
+            Ok(EffectUpdate { effect: 2, freq_pct: None, amp_pct: None }),
+        );
+        assert_eq!(
+            parse_effect_json(r#"{"effect":"wave"}"#),
+            Ok(EffectUpdate { effect: 3, freq_pct: None, amp_pct: None }),
+        );
+        assert!(parse_effect_json(r#"{"effect":"rainbow"}"#).is_err());
         assert!(parse_effect_json("{}").is_err());
+    }
+
+    #[test]
+    fn effect_tuning_fields() {
+        assert_eq!(
+            parse_effect_json(r#"{"effect":"wave","freq_pct":150,"amp_pct":80}"#),
+            Ok(EffectUpdate { effect: 3, freq_pct: Some(150), amp_pct: Some(80) }),
+        );
+        assert_eq!(
+            parse_effect_json(r#"{"freq_pct":120,"effect":"breathing","amp_pct":0}"#),
+            Ok(EffectUpdate { effect: 1, freq_pct: Some(120), amp_pct: Some(0) }),
+        );
+        assert!(parse_effect_json(r#"{"effect":"wheel","freq_pct":5}"#).is_err());
+        assert!(parse_effect_json(r#"{"effect":"wheel","freq_pct":201}"#).is_err());
+        assert!(parse_effect_json(r#"{"effect":"wheel","amp_pct":-1}"#).is_err());
+        assert!(parse_effect_json(r#"{"effect":"wheel","amp_pct":101}"#).is_err());
     }
 }
 

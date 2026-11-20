@@ -71,7 +71,13 @@ pub fn current_frame(t_ms: u32) -> [u8; FRAME_BYTES] {
         crate::ui::MODE_CO2 => led::co2_leds(crate::sensors::co2_ppm_now()),
         crate::ui::MODE_TEMP => led::temp_leds(crate::sensors::temp_mc_now()),
         crate::ui::MODE_DATE => led::date_leds(c.month),
-        _ => led::clock_effect(clock_base(c), crate::settings::led_effect(), t_ms),
+        _ => led::clock_effect_tuned(
+            clock_base(c),
+            crate::settings::led_effect(),
+            t_ms,
+            crate::settings::led_freq_pct(),
+            crate::settings::led_amp_pct(),
+        ),
     };
     let mut out = [0u8; FRAME_BYTES];
     for (i, (r, g, b)) in colors.iter().enumerate() {

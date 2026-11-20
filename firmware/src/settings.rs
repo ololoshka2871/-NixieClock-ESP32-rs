@@ -27,11 +27,15 @@ const K_NTP: Key = const { Key::from_str("ntp_server") };
 const K_TZ: Key = const { Key::from_str("tz_min") };
 const K_COLOR: Key = const { Key::from_str("clock_color") };
 const K_EFFECT: Key = const { Key::from_str("led_effect") };
+const K_EFFECT_FREQ: Key = const { Key::from_str("led_freq_pct") };
+const K_EFFECT_AMP: Key = const { Key::from_str("led_amp_pct") };
 
 /// Кэш подсветки: flash читать нельзя в горячем пути индикации.
 /// `u32::MAX` = пользовательский цвет не сохранён -> действует цвет месяца.
 static CLOCK_COLOR: AtomicU32 = AtomicU32::new(u32::MAX);
 static LED_EFFECT: AtomicU8 = AtomicU8::new(0);
+static LED_EFFECT_FREQ: AtomicU8 = AtomicU8::new(clock_core::led::FREQ_PCT_DEFAULT);
+static LED_EFFECT_AMP: AtomicU8 = AtomicU8::new(clock_core::led::AMP_PCT_DEFAULT);
 
 /// Открыть NVS поверх общей flash: найти раздел nvs в таблице разделов,
 /// открыть, выполнить замыкание, закрыть (flash при этом освобождается).
@@ -216,12 +220,32 @@ pub fn led_effect() -> u8 {
     LED_EFFECT.load(Ordering::Relaxed)
 }
 
+pub fn led_freq_pct() -> u8 {
+    LED_EFFECT_FREQ.load(Ordering::Relaxed)
+}
+
+pub fn led_amp_pct() -> u8 {
+    LED_EFFECT_AMP.load(Ordering::Relaxed)
+}
+
 /// Загрузить подсветку из NVS в атомики (вызывается один раз на бутe).
 pub fn load_led() {
     let color = with_nvs(|nvs| nvs.get::<u32>(&NS, &K_COLOR).ok()).flatten();
     let eff = with_nvs(|nvs| nvs.get::<u8>(&NS, &K_EFFECT).ok()).flatten();
+    let freq = with_nvs(|nvs| nvs.get::<u8>(&NS, &K_EFFECT_FREQ).ok()).flatten();
+    let amp = with_nvs(|nvs| nvs.get::<u8>(&NS, &K_EFFECT_AMP).ok()).flatten();
     CLOCK_COLOR.store(color.unwrap_or(u32::MAX), Ordering::Relaxed);
     LED_EFFECT.store(eff.filter(|v| *v <= 3).unwrap_or(0), Ordering::Relaxed);
+    LED_EFFECT_FREQ.store(
+        freq.filter(|v| *v >= clock_core::led::FREQ_PCT_MIN && *v <= clock_core::led::FREQ_PCT_MAX)
+            .unwrap_or(clock_core::led::FREQ_PCT_DEFAULT),
+        Ordering::Relaxed,
+    );
+    LED_EFFECT_AMP.store(
+        amp.filter(|v| *v >= clock_core::led::AMP_PCT_MIN && *v <= clock_core::led::AMP_PCT_MAX)
+            .unwrap_or(clock_core::led::AMP_PCT_DEFAULT),
+        Ordering::Relaxed,
+    );
     match color {
         Some(v) => log::info!(
             "подсветка: цвет #{:06x}, эффект {}",
@@ -251,19 +275,44 @@ pub fn save_color(value: Option<u32>) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Сохранить эффект (0..3).
-pub fn save_effect(e: u8) -> Result<(), &'static str> {
-    if e > 3 {
+/// Сохранить эффект (0..3) и, если переданы, частоту/амплитуду эффекта.
+pub fn save_effect(update: clock_core::settings::EffectUpdate) -> Result<(), &'static str> {
+    if update.effect > 3 {
         return Err("effect: 0..3");
     }
     let r = with_nvs(|nvs| {
-        nvs.set(&NS, &K_EFFECT, e)
+        nvs.set(&NS, &K_EFFECT, update.effect)
             .map_err(|_| "nvs: запись led_effect")?;
+        if let Some(v) = update.freq_pct {
+            if v < clock_core::led::FREQ_PCT_MIN || v > clock_core::led::FREQ_PCT_MAX {
+                return Err("freq_pct: 10..200");
+            }
+            nvs.set(&NS, &K_EFFECT_FREQ, v)
+                .map_err(|_| "nvs: запись led_freq_pct")?;
+        }
+        if let Some(v) = update.amp_pct {
+            if v > clock_core::led::AMP_PCT_MAX {
+                return Err("amp_pct: 0..100");
+            }
+            nvs.set(&NS, &K_EFFECT_AMP, v)
+                .map_err(|_| "nvs: запись led_amp_pct")?;
+        }
         Ok::<(), &'static str>(())
     })
     .ok_or("nvs: раздел недоступен")?;
     r?;
-    LED_EFFECT.store(e, Ordering::Relaxed);
-    log::info!("NVS: эффект подсветки -> {}", clock_core::led::effect_name(e));
+    LED_EFFECT.store(update.effect, Ordering::Relaxed);
+    if let Some(v) = update.freq_pct {
+        LED_EFFECT_FREQ.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = update.amp_pct {
+        LED_EFFECT_AMP.store(v, Ordering::Relaxed);
+    }
+    log::info!(
+        "NVS: эффект подсветки -> {}, частота {}%, амплитуда {}%",
+        clock_core::led::effect_name(update.effect),
+        led_freq_pct(),
+        led_amp_pct()
+    );
     Ok(())
 }

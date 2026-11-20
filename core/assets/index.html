@@ -62,6 +62,8 @@
             <b>цвет часов</b><span id="led_color">—</span>
             <b>цвет месяца</b><span id="led_month">—</span>
             <b>эффект</b><span id="led_effect">—</span>
+            <b>частота</b><span id="led_freq">—</span>
+            <b>амплитуда</b><span id="led_amp">—</span>
             <b>режим</b><span id="led_mode">—</span>
         </div>
         <div class="row">
@@ -77,6 +79,12 @@
                 <option value="wave">волна — бегущий градиент</option>
             </select>
             <button id="led_fx_apply">Применить эффект</button>
+        </div>
+        <div class="row led-tuning">
+            <label for="led_freq_in"><b id="led_freq_label">частота</b><input type="range"
+                    id="led_freq_in" min="10" max="200" step="5" value="100"><output id="led_freq_out">100%</output></label>
+            <label for="led_amp_in"><b id="led_amp_label">амплитуда</b><input type="range"
+                    id="led_amp_in" min="0" max="100" step="5" value="100"><output id="led_amp_out">100%</output></label>
         </div>
         <div id="led_msg" class="note">Подсветка часов по умолчанию — цвет месяца (таблица оригинала); свой цвет (в т.ч. чёрный) задаётся цветовым пикером. Эффекты работают только в режиме часов.</div>
     </div>
