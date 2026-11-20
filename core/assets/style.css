@@ -46,7 +46,7 @@ h2 {
 
 .kv {
     display: grid;
-    grid-template-columns: 14ch 1fr;
+    grid-template-columns: 25ch 1fr;
     gap: 2px 10px
 }
 
@@ -119,6 +119,7 @@ pre {
 
 .note {
     color: var(--dim);
+    margin-top: 0.5rem;
     font-size: 13px
 }
 

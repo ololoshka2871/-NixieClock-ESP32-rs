@@ -9,29 +9,29 @@
 </head>
 
 <body>
-    <h1>⚡ NixieClock ESP32</h1>
+    <h1>⚡ NixieClock ESP32 ⚡</h1>
 
     <h2>Статус</h2>
     <div class="card">
         <div class="kv">
-            <b>uptime</b><span id="uptime">—</span>
-            <b>firmware</b><span id="fw">—</span>
+            <b>Uptime</b><span id="uptime">—</span>
+            <b>Firmware</b><span id="fw">—</span>
             <b>IP</b><span id="ip">—</span>
-            <b>шлюз (DHCP)</b><span id="gw">—</span>
+            <b>Шлюз (DHCP)</b><span id="gw">—</span>
             <b>DNS (DHCP)</b><span id="dns">—</span>
             <b>OTA-состояние</b><span id="ota_state">—</span>
-            <b>лог-коллектор</b><span id="log_url" class="note">—</span>
+            <b>Лог-коллектор</b><span id="log_url" class="note">—</span>
         </div>
     </div>
 
     <h2>Wi-Fi</h2>
     <div class="card">
         <div class="kv">
-            <b>подключен к</b><span id="wifi_cur">—</span>
-            <b>креды</b><span id="wifi_src">—</span>
+            <b>Подключен к</b><span id="wifi_cur">—</span>
+            <b>Креды</b><span id="wifi_src">—</span>
         </div>
-        <div class="row"><input type="text" id="wifi_ssid_in" placeholder="SSID" maxlength="31"><input
-                type="password" id="wifi_pass_in" placeholder="пароль (8–63)" maxlength="63"></div>
+        <div class="row"><input type="text" id="wifi_ssid_in" placeholder="SSID" maxlength="31"><input type="password"
+                id="wifi_pass_in" placeholder="пароль (8–63)" maxlength="63"></div>
         <div class="row"><button id="wifi_btn">Сохранить и перезагрузить</button></div>
         <div id="wifi_msg" class="note"></div>
     </div>
@@ -39,32 +39,31 @@
     <h2>Время</h2>
     <div class="card">
         <div class="kv">
-            <b>сейчас</b><span id="time_now" class="big">—</span>
-            <b>часовой пояс</b><span id="tz_cur">—</span>
-            <b>источник</b><span id="time_src">—</span>
+            <b>Сейчас</b><span id="time_now" class="big">—</span>
+            <b>Часовой пояс</b><span id="tz_cur">—</span>
+            <b>Источник</b><span id="time_src">—</span>
             <b>NTP-сервер</b><span id="ntp_cur">—</span>
         </div>
         <div class="row"><select id="tz_in"></select><button id="tz_btn">Сохранить пояс</button></div>
         <div id="tz_msg" class="note"></div>
-        <div class="row"><input type="text" id="ntp_in" placeholder="NTP-сервер: IP или имя (напр. 192.168.0.28)"
+        <div class="row"><input type="text" id="ntp_in" placeholder="NTP-сервер: IP или имя (ex. 192.168.0.1)"
                 maxlength="63"><button id="ntp_btn">Сохранить NTP</button></div>
         <div id="ntp_msg" class="note"></div>
-        <div class="row"><input type="datetime-local" id="time_set_in" step="1"><button id="time_btn">Установить
-                вручную</button></div>
-        <div id="time_msg" class="note">DS1307 (I2C0) + SNTP каждые 24 ч. Часы внутри живут в UTC, пояс влияет только на показ
-            (индикатор, WebUI, лог). Ручная установка — UTC-время, когда нет сети;
-            после установки пишется в DS1307. Пустой NTP-сервер = встроенные пулы (pool.ntp.org, time.google.com).</div>
+        <div class="row"><input type="datetime-local" id="time_set_in" step="1"><button id="time_btn">Установить вручную</button></div>
+        <div id="time_msg" class="note">DS1307 + SNTP каждые 24 ч. Часы внутри в UTC, пояс влияет только на
+            показ. Ручная установка — UTC-время, когда нет сети;
+            после установки пишется в DS1307. Пустой NTP-сервер -> встроенные пулы (pool.ntp.org, time.google.com).</div>
     </div>
 
     <h2>Подсветка</h2>
     <div class="card">
         <div class="kv">
-            <b>цвет часов</b><span id="led_color">—</span>
-            <b>цвет месяца</b><span id="led_month">—</span>
-            <b>эффект</b><span id="led_effect">—</span>
-            <b>частота</b><span id="led_freq">—</span>
-            <b>амплитуда</b><span id="led_amp">—</span>
-            <b>режим</b><span id="led_mode">—</span>
+            <b>Цвет часов</b><span id="led_color">—</span>
+            <b>Цвет месяца</b><span id="led_month">—</span>
+            <b>Эффект</b><span id="led_effect">—</span>
+            <b>Частота</b><span id="led_freq">—</span>
+            <b>Амплитуда</b><span id="led_amp">—</span>
+            <b>Режим</b><span id="led_mode">—</span>
         </div>
         <div class="row">
             <input type="color" id="led_pick" value="#000000" title="цвет подсветки часов">
@@ -73,20 +72,19 @@
         </div>
         <div class="row">
             <select id="led_fx">
-                <option value="off">выключено (статический цвет)</option>
-                <option value="breathing">дыхание — вся полоса пульсирует</option>
-                <option value="wheel">колесо — перелив по кругу</option>
-                <option value="wave">волна — бегущий градиент</option>
+                <option value="off">Выключено</option>
+                <option value="breathing">Дыхание</option>
+                <option value="wheel">Радужное колесо</option>
+                <option value="wave">Волна</option>
             </select>
             <button id="led_fx_apply">Применить эффект</button>
         </div>
         <div class="row led-tuning">
-            <label for="led_freq_in"><b id="led_freq_label">частота</b><input type="range"
-                    id="led_freq_in" min="10" max="200" step="5" value="100"><output id="led_freq_out">100%</output></label>
-            <label for="led_amp_in"><b id="led_amp_label">амплитуда</b><input type="range"
-                    id="led_amp_in" min="0" max="100" step="5" value="100"><output id="led_amp_out">100%</output></label>
+            <label for="led_freq_in"><b id="led_freq_label">Частота</b><input type="range" id="led_freq_in" min="10"
+                    max="200" step="5" value="100"><output id="led_freq_out">100%</output></label>
+            <label for="led_amp_in"><b id="led_amp_label">Амплитуда</b><input type="range" id="led_amp_in" min="0"
+                    max="100" step="5" value="100"><output id="led_amp_out">100%</output></label>
         </div>
-        <div id="led_msg" class="note">Подсветка часов по умолчанию — цвет месяца (таблица оригинала); свой цвет (в т.ч. чёрный) задаётся цветовым пикером. Эффекты работают только в режиме часов.</div>
     </div>
 
     <h2>Диагностика индикации</h2>
@@ -94,7 +92,7 @@
         <div class="row" id="digits"></div>
         <div class="row">
             <select id="lamp_sel">
-                <option value="6">все шесть</option>
+                <option value="6">Все</option>
                 <option value="0">Ч1</option>
                 <option value="1">Ч2</option>
                 <option value="2">М1</option>
@@ -102,8 +100,8 @@
                 <option value="4">С1</option>
                 <option value="5">С2</option>
             </select>
-            <label class="note"><input type="checkbox" id="nostrobe"> без строба (лампы тёмные)</label>
-            <label class="note"><input type="checkbox" id="fade" checked> плавная смена цифр (fade)</label>
+            <label class="note"><input type="checkbox" id="nostrobe"> Без стробов (лампы выключены)</label>
+            <label class="note"><input type="checkbox" id="fade" checked> Плавная смена цифр</label>
         </div>
         <div class="row">
             <button class="sec" id="d_clock">Часы</button>
@@ -111,26 +109,22 @@
             <button class="sec" id="d_cycle">Цикл 0..9</button>
             <button class="sec" id="d_raw">Сырые коды</button>
         </div>
-        <div id="d_msg" class="note">Цифра — на выбранной лампе или на всех. «Без строба» гонит код по шине, но
-            лампы не зажигает: так отличаем проблему шины/дешифратора от цепи катодов. «Fade» — старая цифра
-            гаснет линейно до нуля, затем так же плавно зажигается новая.</div>
     </div>
 
     <h2>Датчики</h2>
     <div class="card">
         <div class="kv">
-            <b>температура (DS18x20)</b><span id="sensor_temp">—</span>
+            <b>Температура (DS18x20)</b><span id="sensor_temp">—</span>
             <b>CO2 (MH-Z19)</b><span id="sensor_co2">—</span>
-            <b>шина 3.3 В (АЦП)</b><span id="sensor_v33">—</span>
-            <b>шина 5 В (АЦП)</b><span id="sensor_v5">—</span>
-            <b>шина 12 В (АЦП)</b><span id="sensor_v12">—</span>
+            <b>Шина 3.3 В</b><span id="sensor_v33">—</span>
+            <b>Шина 5 В</b><span id="sensor_v5">—</span>
+            <b>Шина 12 В</b><span id="sensor_v12">—</span>
         </div>
-        <span class="note">CO2 / температура / напряжения — модуль M6.</span>
     </div>
 
     <h2>Обновление (OTA)</h2>
     <div class="card">
-        <input type="text" id="ota_url" value="http://192.168.0.28:8000/app_ota.bin">
+        <input type="text" id="ota_url" value="http://host:port/app_ota.bin">
         <div class="row"><button id="ota_btn">Обновить с URL</button><button class="sec" id="revert_btn">Откатить
                 образ</button></div>
         <div id="ota_msg" class="note"></div>
@@ -138,7 +132,7 @@
 
     <h2>Логи устройства</h2>
     <div class="card">
-        <pre id="logs">(нажмите «Загрузить»)</pre>
+        <pre id="logs">---</pre>
         <div class="row"><button class="sec" id="log_btn">Загрузить</button></div>
     </div>
 

@@ -347,9 +347,9 @@ pub enum TimeSource {
 impl TimeSource {
     pub const fn as_str(&self) -> &'static str {
         match self {
-            TimeSource::Build => "build",
-            TimeSource::Rtc => "rtc",
-            TimeSource::Ntp => "ntp",
+            TimeSource::Build => "Build",
+            TimeSource::Rtc => "RTC",
+            TimeSource::Ntp => "NTP",
             TimeSource::Http => "http",
         }
     }

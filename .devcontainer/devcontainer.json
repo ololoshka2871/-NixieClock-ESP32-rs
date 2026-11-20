@@ -32,7 +32,7 @@
             ]
         }
     },
-    "postCreateCommand": ".devcontainer/post_start.sh"
+    "postCreateCommand": ".devcontainer/post-start.sh"
 
     // Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
     // "remoteUser": "root"

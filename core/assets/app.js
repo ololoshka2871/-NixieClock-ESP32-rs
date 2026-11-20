@@ -16,7 +16,7 @@ async function poll() {
         $("sensor_v5").textContent = s.v5_mv == null ? "нет данных" : (s.v5_mv / 1000).toFixed(2) + " В";
         $("sensor_v12").textContent = s.v12_mv == null ? "нет данных" : (s.v12_mv / 1000).toFixed(2) + " В";
         $("wifi_cur").textContent = s.wifi_ssid || "—";
-        $("wifi_src").textContent = s.wifi_saved ? "из NVS (сохранены)" : "из прошивки (env)";
+        $("wifi_src").textContent = s.wifi_saved ? "из NVS" : "из прошивки (ENV)";
         const el = $("ota_state"); el.textContent = s.ota_state + (s.pending ? " (ждет подтверждения)" : "");
         el.className = s.ota_state === "Valid" ? "ok" : (s.pending || s.ota_state === "New" ? "warn" : "err");
         $("time_now").textContent = s.time || "—";
@@ -40,7 +40,7 @@ poll(); setInterval(poll, 3000);
 $("ota_btn").onclick = async () => {
     const u = $("ota_url").value.trim(); if (!u) return;
     $("ota_msg").textContent = "запрошено…";
-    try { const r = await fetch("/ota?url=" + encodeURIComponent(u)); $("ota_msg").textContent = await r.text() } catch (e) { $("ota_msg").textContent = "ошибка: " + e }
+    try { const r = await fetch("/ota?url=" + encodeURIComponent(u)); $("ota_msg").textContent = "Выполняется" } catch (e) { $("ota_msg").textContent = "ошибка: " + e }
 };
 $("revert_btn").onclick = async () => {
     if (!confirm("Пометить текущий образ INVALID и перезагрузиться (откат на старый слот)?")) return;
@@ -135,7 +135,6 @@ async function kv(u) {
     t.split("\n").forEach(l => { const i = l.indexOf("="); if (i > 0) o[l.slice(0, i)] = l.slice(i + 1) });
     return o;
 }
-const dMsg = $("d_msg");
 const digits = $("digits");
 for (let d = 0; d <= 9; d++) {
     const b = document.createElement("button");
@@ -147,21 +146,20 @@ for (let d = 0; d <= 9; d++) {
 }
 async function testDigit(d) {
     const u = "/display/test?digit=" + d + "&lamp=" + $("lamp_sel").value + "&nostrobe=" + ($("nostrobe").checked ? 1 : 0);
-    dMsg.textContent = "…";
-    dMsg.textContent = (await getText(u)).trim();
+    await getText(u);
     pollDiag();
 }
 $("d_clock").onclick = async () => {
     await getText("/display/test?off=1&nostrobe=0");
     $("nostrobe").checked = false;
-    dMsg.textContent = (await getText("/display/on")).trim();
+    await getText("/display/on");
     pollDiag();
 };
-$("d_off").onclick = async () => { dMsg.textContent = (await getText("/display/off")).trim(); pollDiag() };
-$("d_cycle").onclick = async () => { dMsg.textContent = (await getText("/display/test?cycle=1&lamp=6")).trim(); pollDiag() };
-$("d_raw").onclick = async () => { dMsg.textContent = (await getText("/display/test?rawcycle=1&lamp=6")).trim(); pollDiag() };
+$("d_off").onclick = async () => { await getText("/display/off"); pollDiag() };
+$("d_cycle").onclick = async () => { await getText("/display/test?cycle=1&lamp=6"); pollDiag() };
+$("d_raw").onclick = async () => { await getText("/display/test?rawcycle=1&lamp=6"); pollDiag() };
 $("fade").onchange = async e => {
-    dMsg.textContent = (await getText("/display/fade?on=" + (e.target.checked ? 1 : 0))).trim();
+    await getText("/display/fade?on=" + (e.target.checked ? 1 : 0));
     pollDiag();
 };
 
@@ -180,26 +178,20 @@ let ledTouched = false;
 $("led_pick").addEventListener("change", () => { ledTouched = true });
 $("led_apply").onclick = async () => {
     const hex = $("led_pick").value;
-    $("led_msg").textContent = "сохраняю…";
     try {
         const r = await fetch("/api/color", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hex }) });
         const k = await r.json();
-        $("led_msg").textContent = k.status === "saved"
-            ? ("цвет часов: " + k.color)
-            : ("ошибка: " + (k.error || r.status));
         ledTouched = false;
         poll();
-    } catch (e) { $("led_msg").textContent = "ошибка: " + e }
+    } catch (e) { alert("ошибка: " + e) }
 };
 $("led_reset").onclick = async () => {
-    $("led_msg").textContent = "сбрасываю…";
     try {
         const r = await fetch("/api/color", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reset: true }) });
         const k = await r.json();
-        $("led_msg").textContent = k.status === "saved" ? ("цвет по таблице месяца: " + k.color) : ("ошибка: " + (k.error || r.status));
         ledTouched = false;
         poll();
-    } catch (e) { $("led_msg").textContent = "ошибка: " + e }
+    } catch (e) { alert("ошибка: " + e) }
 };
 // ---- частота и амплитуда подсветки ----
 let ledFxTouched = false;
@@ -212,8 +204,8 @@ function syncLocalTuning() {
     $("led_freq_out").textContent = ledFreq.value + "%";
     $("led_amp_out").textContent = ledAmp.value + "%";
     const fx = ledFx.value;
-    $("led_freq_label").textContent = fx === "wheel" ? "скорость колеса" : "частота";
-    $("led_amp_label").textContent = fx === "wheel" ? "максимальная яркость" : "амплитуда";
+    $("led_freq_label").textContent = fx === "wheel" ? "Скорость колеса" : "Частота";
+    $("led_amp_label").textContent = fx === "wheel" ? "Максимальная яркость" : "Амплитуда";
     ledFreq.disabled = fx === "off";
     ledAmp.disabled = fx === "off";
 }
@@ -235,7 +227,7 @@ function syncEffectTuning(s) {
     }
 }
 
-ledFx.addEventListener("change", () => { ledFxTouched = true; syncLocalTuning(); $("led_msg").textContent = "" });
+ledFx.addEventListener("change", () => { ledFxTouched = true; syncLocalTuning() });
 ledFreq.addEventListener("input", () => { ledTuningTouched = true; $("led_freq_out").textContent = ledFreq.value + "%" });
 ledAmp.addEventListener("input", () => { ledTuningTouched = true; $("led_amp_out").textContent = ledAmp.value + "%" });
 syncLocalTuning();
@@ -247,15 +239,11 @@ $("led_fx_apply").onclick = async () => {
         payload.freq_pct = parseInt(ledFreq.value, 10);
         payload.amp_pct = parseInt(ledAmp.value, 10);
     }
-    $("led_msg").textContent = "сохраняю…";
     try {
         const r = await fetch("/api/led/effect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
         const k = await r.json();
-        $("led_msg").textContent = k.status === "saved"
-            ? ("эффект: " + k.effect + ", частота: " + k.freq_pct + " %, амплитуда: " + k.amp_pct + " %")
-            : ("ошибка: " + (k.error || r.status));
         ledFxTouched = false;
         ledTuningTouched = false;
         poll();
-    } catch (e) { $("led_msg").textContent = "ошибка: " + e }
+    } catch (e) { alert("ошибка: " + e) }
 };
