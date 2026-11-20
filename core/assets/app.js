@@ -16,7 +16,9 @@ async function poll() {
         $("sensor_v5").textContent = s.v5_mv == null ? "нет данных" : (s.v5_mv / 1000).toFixed(2) + " В";
         $("sensor_v12").textContent = s.v12_mv == null ? "нет данных" : (s.v12_mv / 1000).toFixed(2) + " В";
         $("wifi_cur").textContent = s.wifi_ssid || "—";
-        $("wifi_src").textContent = s.wifi_saved ? "из NVS" : "из прошивки (ENV)";
+        $("wifi_src").textContent = s.wifi_ready
+            ? (s.wifi_saved ? "из настроек" : "из прошивки")
+            : "нет валидных кредов — часы работают без сети";
         const el = $("ota_state"); el.textContent = s.ota_state + (s.pending ? " (ждет подтверждения)" : "");
         el.className = s.ota_state === "Valid" ? "ok" : (s.pending || s.ota_state === "New" ? "warn" : "err");
         $("time_now").textContent = s.time || "—";
@@ -24,6 +26,7 @@ async function poll() {
         if (!tzTouched && document.activeElement !== $("tz_in")) $("tz_in").value = String(s.tz_min);
         $("time_src").textContent = (s.time_source || "?") + (s.time_synced ? "" : " (не подтверждено)");
         $("ntp_cur").textContent = s.ntp_server || "пулы по умолчанию";
+        $("logurl_cur").textContent = s.log_url || "не настроен — логи только по UART/кольцу";
         $("led_color").textContent = s.led_color || "—";
         $("led_month").textContent = s.led_color_month || "—";
         $("led_effect").textContent = s.led_effect || "—";
@@ -49,6 +52,16 @@ $("revert_btn").onclick = async () => {
 $("log_btn").onclick = async () => {
     try { const r = await fetch("/logs", { cache: "no-store" }); $("logs").textContent = await r.text() } catch (e) { $("logs").textContent = "ошибка: " + e }
 };
+// Коллектор логов — необязательный: пустое значение отключает отправку.
+async function setLogUrl(url) {
+    $("logurl_msg").textContent = "сохраняю…";
+    try {
+        const r = await fetch("/api/logs/url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+        $("logurl_msg").textContent = await r.text();
+    } catch (e) { $("logurl_msg").textContent = "ошибка: " + e }
+}
+$("logurl_btn").onclick = () => setLogUrl($("logurl_in").value.trim());
+$("logurl_off").onclick = () => setLogUrl("");
 $("wifi_btn").onclick = async () => {
     const ssid = $("wifi_ssid_in").value.trim(), pass = $("wifi_pass_in").value;
     $("wifi_msg").textContent = "сохраняю…";

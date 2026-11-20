@@ -1,5 +1,6 @@
 //! Приложение-шаблон для ESP32 (строится поверх esp32-wifi-bootloader на плате):
-//! - WiFi (esp-radio + embassy-net + DHCP), логи POST'ом на LOG_URL (коллектор),
+//! - WiFi (esp-radio + embassy-net + DHCP), логи POST'ом на адрес коллектора
+//!   (NVS/WebGUI; не настроен — логи только в UART и /logs),
 //!   HTTP-эндпоинты на устройстве: /status /logs /ota?url=... /revert;
 //! - WiFi OTA по штатному ESP-IDF механизму: закачка в свободный слот,
 //!   гейт по магик-байту 0xE9, активация, подтверждение Valid только после
@@ -84,10 +85,13 @@ pub const SSID: &str = env!("SSID");
 pub const PASSWORD: &str = env!("PASSWORD");
 pub const LOG_URL: &str = match option_env!("LOG_URL") {
     Some(v) => v,
-    None => "http://192.168.1.205:8000/logs",
+    // Коллектор опционален (issue #6): без build-time адреса часы работают
+    // сами — логи только в UART/ring, адрес ставится из WebGUI в NVS.
+    None => "",
 };
 
-/// Сколько секунд даём новому (неподтверждённому) образу подняться.
+/// Сколько секунд даём новому (неподтверждённому) образу подтвердиться
+/// (`confirm_app_alive` — циклы индикации; Wi-Fi условием не является).
 pub const PENDING_TIMEOUT_SECS: u64 = 60;
 /// Таймаут reset-watchdog.
 pub const WDT_TIMEOUT_SECS: u64 = 30;
@@ -95,6 +99,10 @@ pub const WDT_TIMEOUT_SECS: u64 = 30;
 pub static PENDING_BOOT: AtomicBool = AtomicBool::new(false);
 pub static BOOT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 pub static ROLLBACK_LATCHED: AtomicBool = AtomicBool::new(false);
+/// Wi-Fi реально поднят (есть валидные креды и контроллер инициализирован).
+/// False — устройство живёт без сети: индикация, датчики и локальные логи
+/// работают как обычно, недоступен только HTTP/OTA по LAN.
+pub static WIFI_READY: AtomicBool = AtomicBool::new(false);
 pub static OTA_BUSY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
@@ -254,7 +262,7 @@ async fn main(spawner: Spawner) -> ! {
                 if st == OtaImageState::New || st == OtaImageState::PendingVerify {
                     PENDING_BOOT.store(true, Ordering::SeqCst);
                     log::warn!(
-                        "image is not confirmed yet: {}s to bring WiFi up, otherwise rollback",
+                        "image is not confirmed yet: {}s to show live display cycles, otherwise rollback",
                         PENDING_TIMEOUT_SECS
                     );
                 }
@@ -264,38 +272,47 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     // WiFi: сохранённые в NVS креды; если их нет — креды из времени сборки (env).
-    let saved = settings::load_wifi();
-    let creds = match &saved {
-        Some(c) => {
-            log::info!("wifi creds loaded from NVS (ssid={})", c.ssid);
-            c.clone()
-        }
-        None => {
-            log::info!("no creds in NVS: using build-time SSID={}", SSID);
-            clock_core::settings::WifiCredentials::new(SSID, PASSWORD)
-                .expect("build-time SSID/PASSWORD must be valid")
-        }
-    };
-    settings::set_active(&creds, saved.is_some());
+    // Ни того, ни другого нет (или креды невалидны) — НЕ паникуем: часы живут
+    // без сети, Wi-Fi настраивается позже (POST /api/wifi) либо UART-прошивкой.
+    let creds = wifi_credentials();
+    settings::set_active(&creds.unwrap_or_default(), settings::load_wifi().is_some());
     // Пояс из NVS: до старта индикации и часовых задач.
     tz::load();
     // Подсветка из NVS (цвет часов, эффект) — до старта задач индикации.
     settings::load_led();
-    let station_config = WifiConfig::Station(
-        StationConfig::default()
-            .with_ssid(creds.ssid.as_str().try_into().unwrap())
+    // Адрес лог-коллектора (issue #6): NVS > сборочный default LOG_URL > выключен.
+    match settings::load_log_url() {
+        Some(u) => settings::apply_log_url_runtime(u.as_str()),
+        None => settings::apply_log_url_runtime(LOG_URL),
+    }
+    // Wi-Fi поднимается только если есть валидные креды. Без них сеть просто
+    // отсутствует — индикация, датчики, SNTP-задачи и локальные логи работают.
+    let mut controller = creds.and_then(|c| {
+        let station = StationConfig::default()
+            .with_ssid(c.ssid.as_str().try_into().unwrap())
             .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
-                creds.password.as_str().try_into().unwrap(),
-            )),
-    );
-    let wifi_interface = Interface::station();
-    let mut controller = WifiController::new(
-        peripherals.WIFI,
-        ControllerConfig::default().with_initial_config(station_config),
-    )
-    .expect("wifi init failed");
-    // Без light sleep: логи должны уходить без задержек.
-    let _ = controller.set_power_saving(PowerSaveMode::None);
+                c.password.as_str().try_into().unwrap(),
+            ));
+        match WifiController::new(
+            peripherals.WIFI,
+            ControllerConfig::default().with_initial_config(WifiConfig::Station(station)),
+        ) {
+            Ok(ctrl) => Some(ctrl),
+            Err(e) => {
+                log::error!("wifi init failed ({:?}) — running without wifi", e);
+                None
+            }
+        }
+    });
+    if let Some(ctrl) = controller.as_mut() {
+        // Без light sleep: логи должны уходить без задержек.
+        let _ = ctrl.set_power_saving(PowerSaveMode::None);
+        WIFI_READY.store(true, Ordering::SeqCst);
+    } else {
+        WIFI_READY.store(false, Ordering::SeqCst);
+    }
+    let controller_ref: Option<&'static mut WifiController<'static>> =
+        controller.as_mut().map(|c| &mut *c);
 
     // M4: DS1307 на I2C0 (SDA=GPIO21, SCL=GPIO22, 400 kHz) — пины/адрес с
     // оригинальной IDF-платы (RTC.cpp). Единственный владелец шины —
@@ -315,7 +332,7 @@ async fn main(spawner: Spawner) -> ! {
     let (stack, runner) = embassy_net::new(
         // ICMP echo (ping) отвечают на уровне драйвера: smoltcp не принимает
         // Echo Request с произвольным identifier. См. firmware/src/icmp.rs.
-        icmp::IcmpDevice::new(wifi_interface),
+        icmp::IcmpDevice::new(Interface::station()),
         embassy_net::Config::dhcpv4(Default::default()),
         // smoltcp SocketSet фиксированный: DHCP занимает 1 слот, каждый
         // DnsSocket (logger + updater) и каждый TcpSocket сервера — ещё слоты,
@@ -394,10 +411,13 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(ui::button_task(peripherals.GPIO0).unwrap());
 
     spawner.spawn(clock::sntp_task(stack).unwrap());
-    spawner.spawn(connection(controller).unwrap());
+    match controller_ref {
+        Some(ctrl) => spawner.spawn(connection(ctrl).unwrap()),
+        None => log::warn!("wifi task skipped: no valid credentials (clock runs offline)"),
+    };
     spawner.spawn(status_task(stack).unwrap());
     spawner.spawn(server::server_task(stack).unwrap());
-    spawner.spawn(logger::logfwd_task(stack).unwrap());
+    logger::spawn_logger_task(&spawner, stack);
     spawner.spawn(updater::ota_worker_task(stack).unwrap());
     spawner.spawn(clock::clock_ticker_task().unwrap());
     spawner.spawn(app::app_task().unwrap());
@@ -406,8 +426,10 @@ async fn main(spawner: Spawner) -> ! {
         spawner.spawn(pending_guard().unwrap());
     }
 
-    // Подтверждение образа: только когда реально получили IP по DHCP.
-    stack.wait_config_up().await;
+    // Подтверждение образа: сеть не является условием. Доказательство
+    // работоспособности — живые циклы индикации (offline-сценарий: коллектор
+    // недоступен, Wi-Fi настроен криво — часы всё равно должны жить).
+    confirm_app_alive().await;
     if let Some(cfg) = stack.config_v4() {
         icmp::set_our_ip(cfg.address.address().octets());
         log::info!("got IP {}", cfg.address);
@@ -416,7 +438,10 @@ async fn main(spawner: Spawner) -> ! {
         match updater::with_updater(|u| u.set_current_ota_state(OtaImageState::Valid)) {
             Ok(()) => {
                 BOOT_CONFIRMED.store(true, Ordering::SeqCst);
-                log::info!("OTA image confirmed VALID");
+                log::info!(
+                    "OTA image confirmed VALID (display alive; wifi={})",
+                    WIFI_READY.load(Ordering::SeqCst)
+                );
             }
             Err(e) => log::warn!("confirm failed: {}", e),
         }
@@ -442,7 +467,8 @@ async fn net_task(mut runner: Runner<'static, icmp::IcmpDevice<Interface>>) {
 }
 
 /// Раз в 30 с публикуем состояние сети: без IP виден предупреждающий hb,
-/// с IP — полученный адрес. Логи идут в UART и через logfwd на LOG_URL.
+/// с IP — полученный адрес. Логи идут в UART и, если коллектор настроен,
+/// через logfwd на его адрес (issue #6: без адреса отправка выключена).
 /// Заодно обновляем OUR_IP для ICMP-резолвера (ping отвечает только когда
 /// адрес известен).
 #[embassy_executor::task]
@@ -481,6 +507,48 @@ async fn connection(mut controller: WifiController<'static>) {
         }
         Timer::after_secs(5).await;
     }
+}
+
+/// Креды Wi-Fi: NVS > build-time (env). Отсутствие или невалидность кредов —
+/// **штатная ситуация**, а не фатальная: возвращаем None, контроллер Wi-Fi не
+/// поднимается, всё остальное (индикация, датчики, локальные логи) работает.
+fn wifi_credentials() -> Option<clock_core::settings::WifiCredentials> {
+    if let Some(c) = settings::load_wifi() {
+        match clock_core::settings::WifiCredentials::new(c.ssid.as_str(), c.password.as_str()) {
+            Ok(v) => {
+                log::info!("wifi creds loaded from NVS (ssid={})", v.ssid);
+                return Some(v);
+            }
+            Err(e) => log::warn!("saved wifi creds invalid: {e}"),
+        }
+    }
+    match clock_core::settings::WifiCredentials::new(SSID, PASSWORD) {
+        Ok(v) => {
+            log::info!("no usable creds in NVS: using build-time SSID={}", v.ssid);
+            Some(v)
+        }
+        Err(e) => {
+            log::warn!("no wifi creds (NVS empty, build-time invalid: {e}) — running without wifi");
+            None
+        }
+    }
+}
+
+/// Подтверждение работоспособности образа НЕ требует сети: достаточного
+/// живого цикла индикации (см. `hangdetect::CYCLE`/`FRAME`).
+fn display_cycles_alive() -> bool {
+    hangdetect::CYCLE.load(Ordering::SeqCst) >= 2
+        || hangdetect::FRAME.load(Ordering::SeqCst) > 200
+}
+
+async fn confirm_app_alive() {
+    for _ in 0..24 {
+        if display_cycles_alive() {
+            return;
+        }
+        Timer::after_millis(500).await;
+    }
+    log::warn!("display produced no cycles within 12s — confirming without display evidence");
 }
 
 /// Если неподтверждённый образ не подтвердился за PENDING_TIMEOUT_SECS —

@@ -12,7 +12,7 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 use heapless::String;
 
 use crate::{
-    BOOT_CONFIRMED, LOG_URL, OTA_BUSY, OTA_REQ, OtaPublisher, OtaRequest,
+    BOOT_CONFIRMED, OTA_BUSY, OTA_REQ, OtaPublisher, OtaRequest,
     PENDING_BOOT, ROLLBACK_LATCHED, logger,
 };
 use esp_hal::system::software_reset;
@@ -186,12 +186,19 @@ async fn handle<'a>(
                 read_post_body(socket, reqbuf, &mut raw, len).await;
                 handle_effect_set(socket, raw.as_slice()).await;
             }
+            "/api/logs/url" => {
+                // Коллектор опционален (issue #6): POST {"url":"http://host:port/logs"}
+                // или {"url":""} — отключить отправку логов.
+                let mut raw: heapless::Vec<u8, 512> = heapless::Vec::new();
+                read_post_body(socket, reqbuf, &mut raw, len).await;
+                handle_log_url_set(socket, raw.as_slice()).await;
+            }
             _ => {
                 respond(
                     socket,
                     "405 Method Not Allowed",
                     "text/plain",
-                    "POST is accepted on /api/wifi/connect, /api/time, /api/ntp, /api/tz, /api/color and /api/led/effect\n",
+                    "POST is accepted on /api/wifi/connect, /api/time, /api/ntp, /api/tz, /api/color, /api/led/effect and /api/logs/url\n",
                 )
                 .await;
             }
@@ -230,6 +237,7 @@ async fn handle<'a>(
                 }
             }
             let ntp_saved = crate::settings::load_ntp();
+            let logurl_saved = crate::settings::log_url_runtime();
             let aw = crate::settings::active_wifi();
             let (epoch, civil_str, tsource, synced) = crate::clock::snapshot().await;
             let civil = crate::tz::civil(epoch);
@@ -265,12 +273,18 @@ async fn handle<'a>(
                 busy: OTA_BUSY.load(Ordering::SeqCst),
                 wifi_ssid: if aw.ssid.is_empty() { None } else { Some(aw.ssid.as_str()) },
                 wifi_saved: aw.from_nvs,
+                wifi_ready: crate::WIFI_READY.load(Ordering::SeqCst),
                 time_epoch: epoch,
                 tz_min: crate::tz::get(),
                 time: Some(civil_str.as_str()),
                 time_source: tsource.as_str(),
                 time_synced: synced,
                 ntp_server: ntp_saved.as_ref().map(|s| s.as_str()),
+                log_url: if logurl_saved.is_empty() {
+                    None
+                } else {
+                    Some(logurl_saved.as_str())
+                },
                 gateway: if gwbuf.is_empty() { None } else { Some(gwbuf.as_str()) },
                 dhcp_done,
                 dns: if dnsbuf.is_empty() { None } else { Some(dnsbuf.as_str()) },
@@ -293,7 +307,12 @@ async fn handle<'a>(
         }
         "/status" => {
             status_body(body);
-            let _ = write!(body, "log_url={}\n", LOG_URL);
+            let logurl = crate::settings::log_url_runtime();
+            let _ = write!(
+                body,
+                "log_url={}\n",
+                if logurl.is_empty() { "disabled" } else { logurl.as_str() }
+            );
             respond(socket, "200 OK", "text/plain; charset=utf-8", body.as_str()).await;
         }
         #[cfg(not(feature = "display"))]
@@ -400,7 +419,25 @@ async fn handle<'a>(
             if body.is_empty() {
                 let _ = body.push_str("(log buffer empty)\n");
             }
+            // Коллектор опционален: заодно показываем, настроен ли он.
+            let url = crate::settings::log_url_runtime();
+            let _ = write!(
+                body,
+                "# log collector: {}\n",
+                if url.is_empty() { "disabled" } else { url.as_str() }
+            );
             respond(socket, "200 OK", "text/plain; charset=utf-8", body.as_str()).await;
+        }
+        "/api/logs/url" => {
+            // Текущий адрес коллектора (null = отключён).
+            let url = crate::settings::log_url_runtime();
+            let mut resp: String<160> = String::new();
+            if url.is_empty() {
+                let _ = resp.push_str("{\"status\":\"disabled\",\"url\":null}");
+            } else {
+                let _ = write!(resp, "{{\"status\":\"enabled\",\"url\":\"{}\"}}", url);
+            }
+            respond(socket, "200 OK", "application/json", resp.as_str()).await;
         }
         "/revert" => {
             respond(socket, "200 OK", "text/plain", "marking current image INVALID, resetting\n").await;
@@ -461,7 +498,7 @@ async fn handle<'a>(
                 socket,
                 "404 Not Found",
                 "text/plain",
-                "endpoints: / /api/status /status /logs /api/logs /ota?url=... /revert (POST /api/wifi/connect, /api/time)\n",
+                "endpoints: / /api/status /status /logs /api/logs /api/logs/url /ota?url=... /revert (POST /api/wifi/connect, /api/time)\n",
             )
             .await;
         }
@@ -791,6 +828,39 @@ async fn handle_tz_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
 }
 
 /// POST /api/color: {"hex":"#rrggbb"} | {"r":..,"g":..,"b":..} | {"reset":true}.
+/// POST /api/logs/url: сохранить или отключить адрес лог-коллектора (issue #6).
+async fn handle_log_url_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {
+    let text = core::str::from_utf8(raw).unwrap_or("");
+    let url = match clock_core::settings::parse_log_url_json(text) {
+        Ok(u) => u,
+        Err(e) => {
+            log::warn!("logs/url: rejected: {}", e);
+            let mut resp: String<256> = String::new();
+            let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+            respond(socket, "400 Bad Request", "application/json", resp.as_str()).await;
+            return;
+        }
+    };
+    match crate::settings::save_log_url(Some(url.as_str())) {
+        Ok(()) => {
+            let applied = crate::settings::log_url_runtime();
+            let mut resp: String<256> = String::new();
+            if applied.is_empty() {
+                let _ = resp.push_str("{\"status\":\"saved\",\"log_url\":null,\"note\":\"отправка логов выключена\"}");
+            } else {
+                let _ = write!(resp, "{{\"status\":\"saved\",\"log_url\":\"{}\"}}", applied);
+            }
+            respond(socket, "200 OK", "application/json", resp.as_str()).await;
+        }
+        Err(e) => {
+            log::error!("logs/url: save failed: {}", e);
+            let mut resp: String<256> = String::new();
+            let _ = write!(resp, "{{\"status\":\"error\",\"error\":\"{}\"}}", e);
+            respond(socket, "500 Internal Server Error", "application/json", resp.as_str()).await;
+        }
+    }
+}
+
 /// Без сохранённого цвета режим часов берёт цвет месяца (как в оригинале),
 /// поэтому reset удаляет ключ и возвращает поведение по умолчанию.
 async fn handle_color_set<'a>(socket: &mut TcpSocket<'a>, raw: &[u8]) {

@@ -132,6 +132,13 @@
 
     <h2>Логи устройства</h2>
     <div class="card">
+        <div class="kv">
+            <b>Коллектор</b><span id="logurl_cur">—</span>
+        </div>
+        <div class="row"><input type="text" id="logurl_in" placeholder="http://192.168.0.236:8001/logs"
+                maxlength="128"><button id="logurl_btn">Сохранить коллектор</button><button class="sec"
+                id="logurl_off">Отключить</button></div>
+        <div id="logurl_msg" class="note"></div>
         <pre id="logs">---</pre>
         <div class="row"><button class="sec" id="log_btn">Загрузить</button></div>
     </div>

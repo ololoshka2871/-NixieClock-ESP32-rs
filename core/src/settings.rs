@@ -8,13 +8,14 @@ use heapless::String as HString;
 
 /// Версия схемы настроек в NVS (ключ `schema_ver`). Поднимать при несовместимых
 /// изменениях формата — firmware при несовпадении игнорирует старые ключи.
-pub const SCHEMA_VER: u32 = 1;
+/// 2: добавлен `log_url` (опциональный лог-коллектор, issue #6).
+pub const SCHEMA_VER: u32 = 2;
 
 pub const SSID_MAX: usize = 31; // лимит 802.11
 pub const PASS_MIN: usize = 8; // WPA2-PSK
 pub const PASS_MAX: usize = 63;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct WifiCredentials {
     pub ssid: HString<32>,
     pub password: HString<64>,
@@ -78,6 +79,58 @@ pub fn parse_wifi_json(body: &str) -> Result<WifiCredentials, &'static str> {
 /// NTP-сервер пользователя: имя хоста или IPv4. Пусто/отсутствие ключа —
 /// встроенные пулы (pool.ntp.org, time.google.com).
 pub const NTP_MAX: usize = 63;
+
+/// Адрес лог-коллектора (`http://host:port/logs`) — опциональный: пусто или
+/// отсутствие значения означает, что отправка логов выключена и устройство
+/// работает без коллектора. Потолок 128 символов.
+pub const LOG_URL_MAX: usize = 128;
+
+/// Проверяет адрес коллектора: только `http://`, хост/порт без пробелов и
+/// управляющих символов. Не нормализует URL — сохраняет как есть.
+pub fn validate_log_url(s: &str) -> Result<HString<128>, &'static str> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(HString::new());
+    }
+    if s.len() > LOG_URL_MAX {
+        return Err("лог-URL длиннее 128 символов");
+    }
+    if !s.is_ascii() {
+        return Err("лог-URL обязан быть ASCII");
+    }
+    if !s.starts_with("http://") {
+        return Err("лог-URL обязан начинаться с http://");
+    }
+    let rest = &s["http://".len()..];
+    if rest.is_empty() {
+        return Err("в лог-URL нет хоста");
+    }
+    if rest.contains(' ') || rest.chars().any(|c| (c as u32) < 0x20 || c == '\x7f') {
+        return Err("в лог-URL есть пробел или управляющий символ");
+    }
+    let host = rest.split('/').next().unwrap_or("");
+    if host.is_empty() {
+        return Err("в лог-URL нет хоста");
+    }
+    let mut out: HString<128> = HString::new();
+    out.push_str(s).map_err(|_| "лог-URL не влезает")?;
+    Ok(out)
+}
+
+/// Тело POST /api/logs/url: `{"url": "http://192.168.0.236:8001/logs"}`.
+/// Пустая строка или отсутствие поля отключают отправку логов. Разбор — нашим
+/// плоским JSON-хелпером (serde в core сознательно не тянем: no_std + бюджет).
+pub fn parse_log_url_json(text: &str) -> Result<HString<128>, &'static str> {
+    if text.trim().is_empty() {
+        return Err("ожидается {\"url\":\"http://host:port/logs\"}");
+    }
+    // Поля нет = намеренный сброс коллектора.
+    match json_str_value(text, "url") {
+        Some(raw) => validate_log_url(&raw),
+        None if text.contains('{') => Ok(HString::new()),
+        None => Err("ожидается {\"url\":\"http://host:port/logs\"}"),
+    }
+}
 
 pub fn validate_ntp(s: &str) -> Result<HString<64>, &'static str> {
     if s.is_empty() || s.len() > NTP_MAX {
@@ -366,5 +419,56 @@ mod tz_json_tests {
         assert!(parse_tz_json("{\"tz\":180}").is_err());
         assert!(parse_tz_json("{\"tz_min\":900}").is_err());
         assert!(parse_tz_json("{\"tz_min\":-800}").is_err());
+    }
+}
+
+#[cfg(test)]
+mod log_url_tests {
+    use super::*;
+
+    #[test]
+    fn log_url_is_optional_and_shape_checked() {
+        // пусто / только пробелы — коллектор выключен
+        assert_eq!(validate_log_url("").unwrap().as_str(), "");
+        assert_eq!(validate_log_url("   ").unwrap().as_str(), "");
+        // обычный адрес коллектора
+        assert_eq!(
+            validate_log_url("http://192.168.0.236:8001/logs")
+                .unwrap()
+                .as_str(),
+            "http://192.168.0.236:8001/logs"
+        );
+        // имя хоста без порта — тоже ок
+        assert_eq!(
+            validate_log_url("http://esplogs.local/logs").as_deref(),
+            Ok("http://esplogs.local/logs")
+        );
+        // не-HTTP отклоняем: коллектор у нас только HTTP
+        assert!(validate_log_url("https://example.com/logs").is_err());
+        assert!(validate_log_url("192.168.0.236:8001/logs").is_err());
+        // голый scheme без хоста
+        assert!(validate_log_url("http://").is_err());
+        assert!(validate_log_url("http:///logs").is_err());
+        // пробелы/управляющие символы сломали бы HTTP-строку запроса
+        assert!(validate_log_url("http://a b/logs").is_err());
+        assert!(validate_log_url("http://a\tb/logs").is_err());
+        // punycode-имя (уже ASCII) проходит — это валидный хост
+        assert!(validate_log_url("http://xn--e1aybc/logs").is_ok());
+        assert!(validate_log_url("http://коллектор/logs").is_err());
+        // потолок 128 символов (строгая проверка по фактической длине)
+        let long = alloc::format!("http://{}", "h".repeat(LOG_URL_MAX));
+        assert!(validate_log_url(&long).is_err());
+        let fits = alloc::format!("http://{}", "h".repeat(LOG_URL_MAX - 7));
+        assert_eq!(validate_log_url(&fits).unwrap().len(), LOG_URL_MAX);
+    }
+
+    #[test]
+    fn log_url_json_body() {
+        let u = parse_log_url_json(r#"{"url":"http://192.168.0.236:8001/logs"}"#).unwrap();
+        assert_eq!(u.as_str(), "http://192.168.0.236:8001/logs");
+        // пустая строка и отсутствие поля = отключить отправку
+        assert_eq!(parse_log_url_json(r#"{"url":""}"#).unwrap().as_str(), "");
+        assert_eq!(parse_log_url_json("{}").unwrap().as_str(), "");
+        assert!(parse_log_url_json("url=http://a").is_err());
     }
 }

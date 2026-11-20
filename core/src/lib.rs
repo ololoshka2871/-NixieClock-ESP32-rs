@@ -74,6 +74,9 @@ pub struct StatusSnapshot<'a> {
     pub busy: bool,
     pub wifi_ssid: Option<&'a str>,
     pub wifi_saved: bool,
+    /// Есть ли валидные креды Wi-Fi (NVS или build-time). False — устройство
+    /// живёт без сети: индикация, датчики и локальные логи работают как обычно.
+    pub wifi_ready: bool,
     /// Форматированное локальное время (UTC + смещение пояса; None, если нет).
     pub time: Option<&'a str>,
     /// Смещение пояса от UTC в минутах (показ; сами часы всегда UTC).
@@ -85,6 +88,9 @@ pub struct StatusSnapshot<'a> {
     pub time_synced: bool,
     /// Сохранённый пользователем NTP-сервер (None — встроенные пулы).
     pub ntp_server: Option<&'a str>,
+    /// Адрес лог-коллектора (`http://host:port/logs`); None — отправка логов
+    /// выключена и устройство работает без коллектора.
+    pub log_url: Option<&'a str>,
     /// Default gateway из DHCP. None без учёта dhcp_done двусмысленно:
     /// либо DHCP ещё не завершился, либо роутер не присылает option 3.
     pub gateway: Option<&'a str>,
@@ -138,8 +144,8 @@ impl StatusSnapshot<'_> {
         }
         write!(
             out,
-            ",\"wifi_saved\":{},\"time\":",
-            self.wifi_saved,
+            ",\"wifi_saved\":{},\"wifi_ready\":{},\"time\":",
+            self.wifi_saved, self.wifi_ready,
         )?;
         match self.time {
             Some(t) => write!(out, "\"{}\"", t)?,
@@ -161,6 +167,10 @@ impl StatusSnapshot<'_> {
         match self.ntp_server {
             Some(s) => write!(out, ",\"ntp_server\":\"{}\"", s)?,
             None => out.write_str(",\"ntp_server\":null")?,
+        }
+        match self.log_url {
+            Some(u) => write!(out, ",\"log_url\":\"{}\"", u)?,
+            None => out.write_str(",\"log_url\":null")?,
         }
         match self.gateway {
             Some(g) => write!(out, ",\"gateway\":\"{}\"", g)?,
@@ -295,12 +305,14 @@ mod tests {
             busy: false,
             wifi_ssid: Some("Mokrot-5G"),
             wifi_saved: true,
+            wifi_ready: true,
             time: Some("2026-11-13 12:00:00"),
             time_epoch: 1_763_035_200,
             tz_min: 180,
             time_source: "ntp",
             time_synced: true,
             ntp_server: Some("192.168.0.28"),
+            log_url: Some("http://192.168.0.236:8001/logs"),
             gateway: Some("192.168.0.1"),
             dhcp_done: true,
             dns: Some("192.168.0.1"),
@@ -321,7 +333,7 @@ mod tests {
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"led_freq_pct\":100,\"led_amp_pct\":100,\"mode\":\"часы\"}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"wifi_ready\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"log_url\":\"http://192.168.0.236:8001/logs\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"led_freq_pct\":100,\"led_amp_pct\":100,\"mode\":\"часы\"}"
         );
         let s2 = StatusSnapshot {
             ip: None,

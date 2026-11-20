@@ -1,5 +1,11 @@
 //! Логирование по WiFi: каждая log-запись кладётся в ring-buffer с номером seq;
-//! фоновая задача собирает неотправленные записи и пакетами POST'ит на LOG_URL.
+//! фоновая задача собирает неотправленные записи и пакетами POST'ит на адрес
+//! коллектора (issue #6: коллектор опционален).
+//!
+//! Адрес живёт в NVS (`log_url`) и меняется из WebGUI без пересборки. Пустой
+//! адрес = коллектора нет: задача не поднимает TCP/DNS, не делает POST и не
+//! влияет на работу устройства (нет warn'ов, таймаутов и retry-штормов). Логи
+//! всегда остаются в UART и в ring-буфере, который отдаёт /logs.
 //!
 //! Раньше на время POST стоял флаг SENDING, который глушил ВСЕ логи. Это была
 //! ловушка: если POST зависал (например, reqwless ждал ответ, а соединение
@@ -27,7 +33,7 @@ use heapless::{Deque, String};
 use reqwless::client::HttpClient;
 use reqwless::request::{Method, RequestBuilder};
 
-use crate::LOG_URL;
+use crate::settings::log_url_runtime;
 
 
 /// Максимальная длина строки лога. Раньше было 180, и длинная диагностика
@@ -142,30 +148,65 @@ pub fn dump_into(out: &mut String<4096>) {
     });
 }
 
+/// Завести фоновую задачу отправки логов. Коллектор опционален (issue #6),
+/// поэтому задача поднимается ВСЕГДА: пустой адрес она обрабатывает сама —
+/// не создаёт TCP/DNS-клиент, не делает POST'ов и не влияет на индикацию.
+/// Именно так адрес, выставленный из WebGUI, начинает работать без перезагрузки.
+/// В embassy-executor 0.10 конструктор задачи возвращает `Result<SpawnToken,
+/// SpawnError>` (пул слотов фиксирован), а сам `spawn` принимает токен и
+/// возвращает `()` — поэтому `?` тут не нужен и неуместен: падать из-за
+/// логгера нельзя, индикация важнее.
+pub fn spawn_logger_task(spawner: &embassy_executor::Spawner, stack: Stack<'static>) {
+    match logfwd_task(stack) {
+        Ok(token) => spawner.spawn(token),
+        // SpawnError в 0.10 имеет единственный вариант Busy и реализует Display.
+        Err(e) => log::warn!("log forwarder not spawned: {}", e),
+    }
+}
+
 #[embassy_executor::task]
 pub async fn logfwd_task(stack: Stack<'static>) {
-    let mut tcp = TcpClient::new(
-        stack,
-        mkstatic!(TcpClientState<1, 1024, 1500>, TcpClientState::<1, 1024, 1500>::new()),
-    );
-    tcp.set_timeout(Some(Duration::from_secs(10)));
-    let dns = DnsSocket::new(stack);
+    // Коллектор опционален (issue #6): пустой адрес = отправка выключена.
+    // Тогда задача просто ждёт — без TCP/DNS-клиента, без POST'ов, без warn'ов
+    // и retry-штормов, то есть отсутствие коллектора никак не влияет на работу
+    // устройства. Логи при этом остаются в UART и в ring-буфере (/logs).
+    let mut tcp: Option<TcpClient<'static, 1, 1024, 1500>> = None;
+    let mut dns: Option<DnsSocket<'static>> = None;
     let hdrbuf = mkstatic!([u8; 512], [0u8; 512]);
     let body = mkstatic!(String<4096>, String::new());
-
-    // Host:port из LOG_URL для заголовка Host
-    let mut host: String<96> = String::new();
-    if let Some(rest) = LOG_URL.strip_prefix("http://") {
-        let _ = host.push_str(rest.split('/').next().unwrap_or(""));
-    }
 
     let mut last_sent: u32 = 0;
     let mut batch_last: u32 = 0;
     let mut fails: u32 = 0;
-    let mut backoff_ms:u64 = 1000;
+    let mut backoff_ms: u64 = 1000;
     let mut lost_mark: u32 = 0;
 
     loop {
+        let url = log_url_runtime();
+        if url.is_empty() {
+            if tcp.is_some() {
+                log::info!("log forwarder disabled (address cleared)");
+                tcp = None;
+                dns = None;
+                body.clear();
+                fails = 0;
+                backoff_ms = 1000;
+            }
+            Timer::after_millis(2000).await;
+            continue;
+        }
+        if tcp.is_none() {
+            tcp = Some(TcpClient::new(
+                stack,
+                mkstatic!(TcpClientState<1, 1024, 1500>, TcpClientState::<1, 1024, 1500>::new()),
+            ));
+            tcp.as_mut().unwrap().set_timeout(Some(Duration::from_secs(10)));
+            dns = Some(DnsSocket::new(stack));
+            log::info!("log forwarder -> {}", url);
+        }
+        let client = tcp.as_mut().unwrap();
+        let dnsref = dns.as_ref().unwrap();
+
         if body.is_empty() {
             // Собираем пакет из неотправленных записей (пауза ~1 сек между пакетами).
             batch_last = RING.lock(|cell| {
@@ -189,13 +230,19 @@ pub async fn logfwd_task(stack: Stack<'static>) {
             }
         }
 
+        // Host:port из адреса коллектора для заголовка Host
+        let mut host: String<96> = String::new();
+        if let Some(rest) = url.strip_prefix("http://") {
+            let _ = host.push_str(rest.split('/').next().unwrap_or(""));
+        }
+
         SENDING.store(true, Ordering::SeqCst);
         // Крошка в RTC: если зависнем именно здесь, на следующем буте будет
         // видно, что последним делом был POST логов.
         crate::rtcmark::mark(crate::rtcmark::T_LOG, crate::rtcmark::L_POST);
         let result = match with_timeout(
             POST_TIMEOUT,
-            do_post(&tcp, &dns, host.as_str(), body.as_str(), hdrbuf),
+            do_post(client, dnsref, url.as_str(), host.as_str(), body.as_str(), hdrbuf),
         )
         .await
         {
@@ -246,12 +293,13 @@ pub async fn logfwd_task(stack: Stack<'static>) {
 async fn do_post(
     tcp: &TcpClient<'static, 1, 1024, 1500>,
     dns: &DnsSocket<'static>,
+    url: &str,
     host: &str,
     body: &str,
     hdrbuf: &mut [u8; 512],
 ) -> Result<(), String<128>> {
     let mut client = HttpClient::new(tcp, dns);
-    let handle = match client.request(Method::POST, LOG_URL).await {
+    let handle = match client.request(Method::POST, url).await {
         Ok(h) => h,
         Err(e) => {
             let mut s: String<128> = String::new();
@@ -274,3 +322,4 @@ async fn do_post(
         }
     }
 }
+

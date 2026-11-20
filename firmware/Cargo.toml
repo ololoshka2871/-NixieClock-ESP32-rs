@@ -1,6 +1,6 @@
 [package]
 name = "nixieclock-firmware"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "ESP32 приложение на базе esp32-wifi-bootloader: WiFi OTA, rollback guard, WiFi-логи"
 

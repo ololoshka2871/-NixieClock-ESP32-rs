@@ -1,5 +1,7 @@
 //! Wi-Fi настройки в NVS-разделе (ESP-IDF-совместимом).
-//! Namespace `settings`, ключи: `schema_ver` (u32), `ssid`, `pass` (u32 = строки).
+//! Namespace `settings`, ключи: `schema_ver` (u32), `ssid`, `pass` (u32 = строки),
+//! `ntp_server`, `tz_min`, `clock_color`, `led_effect`, `led_freq_pct`,
+//! `led_amp_pct`, `log_url` (адрес лог-коллектора; пусто = коллектора нет).
 //! Раздел ищется в таблице разделов; при первой прошивке/битой NVS — fallback.
 
 use core::cell::RefCell;
@@ -29,6 +31,7 @@ const K_COLOR: Key = const { Key::from_str("clock_color") };
 const K_EFFECT: Key = const { Key::from_str("led_effect") };
 const K_EFFECT_FREQ: Key = const { Key::from_str("led_freq_pct") };
 const K_EFFECT_AMP: Key = const { Key::from_str("led_amp_pct") };
+const K_LOG_URL: Key = const { Key::from_str("log_url") };
 
 /// Кэш подсветки: flash читать нельзя в горячем пути индикации.
 /// `u32::MAX` = пользовательский цвет не сохранён -> действует цвет месяца.
@@ -162,6 +165,82 @@ pub fn save_ntp(server: Option<&str>) -> Result<(), &'static str> {
         Ok(())
     })
     .ok_or("nvs: раздел недоступен")?
+}
+
+// ---------------------------------------------------------------------------
+// Лог-коллектор (issue #6): адрес опциональный и настраивается из WebGUI.
+// ---------------------------------------------------------------------------
+
+pub use clock_core::settings::LOG_URL_MAX;
+
+/// Копия адреса коллектора в RAM: её читает logfwd-задача и статусная
+/// страница, её меняет /api/logs/url — без чтения flash в рантайме.
+static LOG_URL_SHARED: Mutex<CriticalSectionRawMutex, RefCell<String<128>>> =
+    Mutex::new(RefCell::new(String::new()));
+
+/// Прочитать адрес коллектора из NVS. None — ключа нет или он пустой, т.е.
+/// коллектор не настроен (это нормальное состояние, а не ошибка).
+pub fn load_log_url() -> Option<String<128>> {
+    with_nvs(|nvs| {
+        let raw = nvs.get::<alloc::string::String>(&NS, &K_LOG_URL).ok()?;
+        if raw.is_empty() {
+            return None;
+        }
+        match clock_core::settings::validate_log_url(raw.as_str()) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::warn!("NVS: ключ log_url невалиден ({}) — игнорируем", e);
+                None
+            }
+        }
+    })
+    .flatten()
+}
+
+/// Применить адрес к рантайму (boot / после записи в NVS). Пустая строка
+/// выключает отправку: logfwd-задача гасит TCP/DNS-клиент и ждёт.
+pub fn apply_log_url_runtime(value: &str) {
+    LOG_URL_SHARED.lock(|cell| {
+        let mut s = cell.borrow_mut();
+        s.clear();
+        let _ = s.push_str(value);
+    });
+    log::info!(
+        "log collector: {}",
+        if value.is_empty() { "отключён (логи только в UART и /logs)" } else { value }
+    );
+}
+
+/// Текущий адрес коллектора для отправки; "" = коллектора нет.
+/// Возвращаем копию (128 Б): ссылку из-под мьютекса отдавать нельзя — её мог
+/// бы инвалидировать другой исполнитель (logfwd и HTTP-сервер работают параллельно).
+pub fn log_url_runtime() -> String<128> {
+    LOG_URL_SHARED.lock(|cell| cell.borrow().clone())
+}
+
+/// Сохранить/сбросить адрес коллектора и тут же применить его к рантайму.
+/// Some("") / None = отключить отправку логов.
+pub fn save_log_url(url: Option<&str>) -> Result<(), &'static str> {
+    let value = url.unwrap_or("").trim();
+    if value.len() > LOG_URL_MAX {
+        return Err("nvs: лог-URL длиннее 128 символов");
+    }
+    let stored: String<128> = match clock_core::settings::validate_log_url(value) {
+        Ok(v) => v,
+        Err(e) => return Err(e),
+    };
+    with_nvs(|nvs| {
+        nvs.set(&NS, &K_LOG_URL, stored.as_str())
+            .map_err(|_| "nvs: запись log_url")?;
+        log::info!(
+            "NVS: лог-коллектор {}",
+            if stored.is_empty() { "сброшен (логи только в UART и /logs)" } else { stored.as_str() }
+        );
+        Ok::<(), &'static str>(())
+    })
+    .ok_or("nvs: раздел недоступен")?;
+    apply_log_url_runtime(stored.as_str());
+    Ok(())
 }
 
 /// Активный Wi-Fi после boot (для статусной страницы; пароль не хранится).
