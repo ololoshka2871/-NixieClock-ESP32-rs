@@ -398,7 +398,8 @@ fn effect_period(base_ms: u32, freq_pct: u8) -> u32 {
 /// Кадр подсветки часов: статический цвет или один из эффектов.
 /// `t_ms` — время с начала работы (монотонные миллисекунды).
 /// `freq_pct` — скорость 10..200 % от базового периода; `amp_pct` — максимальная
-/// яркость 0..100 % от выбранного цвета (для колеса это яркость HSV-полосы).
+/// яркость 0..100 % эффекта. Для выключенного эффекта амплитуда не применяется:
+/// подсветка показывает выбранный цвет целиком.
 pub fn clock_effect_tuned(
     base: Rgb,
     effect: u8,
@@ -432,7 +433,7 @@ pub fn clock_effect_tuned(
                 scale(base, (0.30 + 0.70 * s) * max_brightness)
             })
         }
-        _ => [scale(base, max_brightness); LEDS],
+        _ => [base; LEDS],
     }
 }
 
@@ -685,9 +686,8 @@ mod tests {
         let off = clock_effect_tuned(BLACK, EFFECT_WHEEL, 0, 100, 0);
         assert_eq!(off[0], BLACK);
 
-        let static_half = clock_effect_tuned(c, EFFECT_OFF, 0, 100, 50);
-        assert!(120 <= static_half[0].0 && static_half[0].0 <= 130);
-        assert!(60 <= static_half[0].1 && static_half[0].1 <= 70);
+        let static_full = clock_effect_tuned(c, EFFECT_OFF, 0, 100, 50);
+        assert_eq!(static_full[0], c);
 
         let full_wave = clock_effect_tuned(c, EFFECT_WAVE, 500, 100, 100);
         let half_wave = clock_effect_tuned(c, EFFECT_WAVE, 500, 100, 50);
