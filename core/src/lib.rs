@@ -52,11 +52,13 @@ impl Watchdog {
 }
 
 pub mod display;
+pub mod diag;
 pub mod led;
 pub mod icmp;
 pub mod page;
 pub mod sensors;
 pub mod settings;
+pub mod softap;
 pub mod time;
 pub mod urlenc;
 
@@ -98,6 +100,16 @@ pub struct StatusSnapshot<'a> {
     pub dhcp_done: bool,
     /// Первый DNS-сервер из DHCP (тот же смысл None, что у gateway).
     pub dns: Option<&'a str>,
+    /// Диагностика STA: всего попыток подключения с момента загрузки.
+    pub wifi_attempts: u32,
+    /// Неудачных подключений подряд (0 после успеха; креды при этом не трогаем).
+    pub wifi_fails: u32,
+    /// Пауза текущей ступени лестницы ретраев (секунды; 0 = связь есть).
+    pub wifi_backoff_secs: u64,
+    /// Целевой SSID попадался в последнем after-failure скане.
+    pub wifi_target_seen: bool,
+    /// After-failure скан находил хоть одну AP (false = эфир/радио молчат).
+    pub wifi_scan_seen_any: bool,
     /// M5-датчики (None, пока нет первого успешного замера).
     /// Температура DS18x20, миллиградусы Цельсия.
     pub temp_mc: Option<i32>,
@@ -177,6 +189,15 @@ impl StatusSnapshot<'_> {
             None => out.write_str(",\"gateway\":null")?,
         }
         write!(out, ",\"dhcp_done\":{}", self.dhcp_done)?;
+        write!(
+            out,
+            ",\"wifi_attempts\":{},\"wifi_fails\":{},\"wifi_backoff_secs\":{},\"wifi_target_seen\":{},\"wifi_scan_seen_any\":{}",
+            self.wifi_attempts,
+            self.wifi_fails,
+            self.wifi_backoff_secs,
+            self.wifi_target_seen,
+            self.wifi_scan_seen_any,
+        )?;
         match self.dns {
             Some(d) => write!(out, ",\"dns\":\"{}\"", d)?,
             None => out.write_str(",\"dns\":null")?,
@@ -316,6 +337,11 @@ mod tests {
             gateway: Some("192.168.0.1"),
             dhcp_done: true,
             dns: Some("192.168.0.1"),
+            wifi_attempts: 7,
+            wifi_fails: 0,
+            wifi_backoff_secs: 0,
+            wifi_target_seen: false,
+            wifi_scan_seen_any: true,
             temp_mc: Some(25_000),
             co2_ppm: Some(500),
             co2_temp_mc: Some(25_000),
@@ -333,7 +359,7 @@ mod tests {
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"wifi_ready\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"log_url\":\"http://192.168.0.236:8001/logs\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"led_freq_pct\":100,\"led_amp_pct\":100,\"mode\":\"часы\"}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"wifi_ready\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"log_url\":\"http://192.168.0.236:8001/logs\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"wifi_attempts\":7,\"wifi_fails\":0,\"wifi_backoff_secs\":0,\"wifi_target_seen\":false,\"wifi_scan_seen_any\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"led_freq_pct\":100,\"led_amp_pct\":100,\"mode\":\"часы\"}"
         );
         let s2 = StatusSnapshot {
             ip: None,

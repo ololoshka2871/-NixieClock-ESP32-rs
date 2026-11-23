@@ -497,8 +497,12 @@ async fn status_task(stack: Stack<'static>) {
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>, want: heapless::String<32>) {
     loop {
+        // Лестница ретраев (core::diag): 5 с → 15 с → 60 с → 300 с. Креды при
+        // неудаче НЕ удаляем — AP могла лечь/перестроиться, восстановим.
+        let pause = clock_core::diag::note_attempt();
         match controller.connect_async().await {
             Ok(info) => {
+                clock_core::diag::note_connect_ok();
                 log::info!(
                     "wifi connected: ch={} auth={:?} aid={} bssid={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     info.channel,
@@ -515,11 +519,21 @@ async fn connection(mut controller: WifiController<'static>, want: heapless::Str
                 log::warn!("wifi disconnected: {:?}", d);
             }
             Err(e) => {
-                log::warn!("wifi connect failed: {:?}", e);
-                log_wifi_scan_diag(&mut controller, &want, "after-failure").await;
+                clock_core::diag::note_connect_fail();
+                let (attempts, fails, _, _, _) = clock_core::diag::snapshot();
+                log::warn!(
+                    "wifi connect failed: {:?} (attempt {}, fail streak {}, next pause {}s; creds kept)",
+                    e,
+                    attempts,
+                    fails,
+                    pause
+                );
+                let (seen_any, target_seen) =
+                    log_wifi_scan_diag(&mut controller, &want, "after-failure").await;
+                clock_core::diag::note_scan(seen_any, target_seen);
             }
         }
-        Timer::after_secs(5).await;
+        Timer::after_secs(pause).await;
     }
 }
 
@@ -537,7 +551,7 @@ async fn log_wifi_scan_diag(
     controller: &mut WifiController<'static>,
     want: &heapless::String<32>,
     tag: &str,
-) {
+) -> (bool, bool) {
     match controller.scan_async(&esp_radio::wifi::scan::ScanConfig::default()).await {
         Ok(aps) => {
             log::info!("wifi scan {tag}: {} AP(s)", aps.len());
@@ -551,17 +565,33 @@ async fn log_wifi_scan_diag(
                 );
             }
             match aps.iter().find(|ap| ap.ssid.as_str() == want.as_str()) {
-                Some(ap) => log::info!(
-                    "  target '{}' visible: ch={} rssi={}dBm",
-                    want,
-                    ap.channel,
-                    ap.signal_strength
-                ),
-                None => log::warn!("  target '{}' NOT seen in scan", want),
+                Some(ap) => {
+                    log::info!(
+                        "  target '{}' visible: ch={} rssi={}dBm",
+                        want,
+                        ap.channel,
+                        ap.signal_strength
+                    );
+                    (true, true)
+                }
+                None => {
+                    log::warn!("  target '{}' NOT seen in scan", want);
+                    (true, false)
+                }
             }
         }
-        Err(e) => log::warn!("wifi scan {tag} failed: {e:?}"),
+        Err(e) => {
+            log::warn!("wifi scan {tag} failed: {e:?}");
+            (false, false)
+        }
     }
+}
+
+/// Диагностика STA для `/api/status` и WebUI: счётчик попыток, серия неудач,
+/// текущая пауза лестницы и результат последнего after-failure скана.
+/// Пишет `connection`-таск, читает HTTP — атомиксы, блокировки нет.
+pub fn wifi_diagnostics() -> (u32, u32, u64, bool, bool) {
+    clock_core::diag::snapshot()
 }
 
 /// Креды Wi-Fi: NVS > build-time (env). Отсутствие или невалидность кредов —

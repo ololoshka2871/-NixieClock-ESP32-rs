@@ -261,6 +261,7 @@ async fn handle<'a>(
             let effective = saved.map(clock_core::led::rgb_from_u32).unwrap_or(month);
             let led_hex = clock_core::led::rgb_hex(effective);
             let month_hex = clock_core::led::rgb_hex(month);
+            let (w_attempts, w_fails, w_pause, w_target, w_scan) = crate::wifi_diagnostics();
             let snap = clock_core::StatusSnapshot {
                 uptime_secs: Instant::now().as_secs(),
                 fw: env!("CARGO_PKG_NAME"),
@@ -288,6 +289,11 @@ async fn handle<'a>(
                 gateway: if gwbuf.is_empty() { None } else { Some(gwbuf.as_str()) },
                 dhcp_done,
                 dns: if dnsbuf.is_empty() { None } else { Some(dnsbuf.as_str()) },
+                wifi_attempts: w_attempts,
+                wifi_fails: w_fails,
+                wifi_backoff_secs: w_pause,
+                wifi_target_seen: w_target,
+                wifi_scan_seen_any: w_scan,
                 temp_mc,
                 co2_ppm,
                 co2_temp_mc,
