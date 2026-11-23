@@ -275,7 +275,8 @@ async fn main(spawner: Spawner) -> ! {
     // Ни того, ни другого нет (или креды невалидны) — НЕ паникуем: часы живут
     // без сети, Wi-Fi настраивается позже (POST /api/wifi) либо UART-прошивкой.
     let creds = wifi_credentials();
-    settings::set_active(&creds.unwrap_or_default(), settings::load_wifi().is_some());
+    let wifi_ssid: Option<heapless::String<32>> = creds.as_ref().map(|c| c.ssid.clone());
+    settings::set_active(&creds.clone().unwrap_or_default(), settings::load_wifi().is_some());
     // Пояс из NVS: до старта индикации и часовых задач.
     tz::load();
     // Подсветка из NVS (цвет часов, эффект) — до старта задач индикации.
@@ -311,9 +312,6 @@ async fn main(spawner: Spawner) -> ! {
     } else {
         WIFI_READY.store(false, Ordering::SeqCst);
     }
-    let controller_ref: Option<&'static mut WifiController<'static>> =
-        controller.as_mut().map(|c| &mut *c);
-
     // M4: DS1307 на I2C0 (SDA=GPIO21, SCL=GPIO22, 400 kHz) — пины/адрес с
     // оригинальной IDF-платы (RTC.cpp). Единственный владелец шины —
     // clock_task; при отказе инициализации модель часов живёт на SNTP/HTTP.
@@ -411,8 +409,10 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(ui::button_task(peripherals.GPIO0).unwrap());
 
     spawner.spawn(clock::sntp_task(stack).unwrap());
-    match controller_ref {
-        Some(ctrl) => spawner.spawn(connection(ctrl).unwrap()),
+    match controller.take() {
+        Some(ctrl) => spawner.spawn(
+            connection(ctrl, wifi_ssid.unwrap_or_else(heapless::String::new)).unwrap(),
+        ),
         None => log::warn!("wifi task skipped: no valid credentials (clock runs offline)"),
     };
     spawner.spawn(status_task(stack).unwrap());
@@ -495,17 +495,71 @@ async fn status_task(stack: Stack<'static>) {
 }
 
 #[embassy_executor::task]
-async fn connection(mut controller: WifiController<'static>) {
+async fn connection(mut controller: WifiController<'static>, want: heapless::String<32>) {
+    let mut first_ok = true;
     loop {
         match controller.connect_async().await {
             Ok(info) => {
-                log::info!("wifi connected: {:?}", info);
+                log::info!(
+                    "wifi connected: ch={} auth={:?} aid={} bssid={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    info.channel,
+                    info.authmode,
+                    info.aid,
+                    info.bssid[0],
+                    info.bssid[1],
+                    info.bssid[2],
+                    info.bssid[3],
+                    info.bssid[4],
+                    info.bssid[5]
+                );
+                if first_ok {
+                    first_ok = false;
+                    log_wifi_scan_diag(&mut controller, &want, "post-connect").await;
+                }
                 let d = controller.wait_for_disconnect_async().await;
                 log::warn!("wifi disconnected: {:?}", d);
             }
-            Err(e) => log::warn!("wifi connect failed: {:?}", e),
+            Err(e) => {
+                log::warn!("wifi connect failed: {:?}", e);
+                log_wifi_scan_diag(&mut controller, &want, "after-failure").await;
+            }
         }
         Timer::after_secs(5).await;
+    }
+}
+
+/// Диагностика Wi-Fi: скан эфира с каналом и RSSI каждой точки. При неудачном
+/// подключении показывает, видит ли радио нужный SSID и на каком канале он
+/// вещает (главный кандидат при отказе ассоциации); при успешном — подтверждает
+/// канал/RSSI, на которых ассоциировались.
+async fn log_wifi_scan_diag(
+    controller: &mut WifiController<'static>,
+    want: &heapless::String<32>,
+    tag: &str,
+) {
+    match controller.scan_async(&esp_radio::wifi::scan::ScanConfig::default()).await {
+        Ok(aps) => {
+            log::info!("wifi scan {tag}: {} AP(s)", aps.len());
+            for ap in aps.iter().take(10) {
+                log::info!(
+                    "  ap '{}' ch={} rssi={}dBm auth={:?}",
+                    ap.ssid.as_str(),
+                    ap.channel,
+                    ap.signal_strength,
+                    ap.auth_method
+                );
+            }
+            match aps.iter().find(|ap| ap.ssid.as_str() == want.as_str()) {
+                Some(ap) => log::info!(
+                    "  target '{}' visible: ch={} rssi={}dBm",
+                    want,
+                    ap.channel,
+                    ap.signal_strength
+                ),
+                None => log::warn!("  target '{}' NOT seen in scan", want),
+            }
+        }
+        Err(e) => log::warn!("wifi scan {tag} failed: {e:?}"),
     }
 }
 
