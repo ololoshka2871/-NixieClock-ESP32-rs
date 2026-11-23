@@ -16,7 +16,9 @@ extern crate alloc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_executor::Spawner;
-use embassy_net::{Runner, Stack, StackResources};
+use embassy_net::{
+    ConfigV4, Ipv4Address, Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4,
+};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     pubsub::{PubSubChannel, Publisher},
@@ -42,11 +44,15 @@ use esp_hal::{
     timer::timg::TimerGroup,
     uart::{Config as UartConfig, Uart},
 };
+use esp_radio::wifi::ap::AccessPointConfig;
 use esp_radio::wifi::{
     sta::StationConfig, AuthenticationMethodConfig, Config as WifiConfig, ControllerConfig,
-    Interface, PowerSaveMode, WifiController,
+    PowerSaveMode, WifiController,
 };
 use esp_storage::FlashStorage;
+
+use clock_core::softap::{self, WifiCredentials};
+use netdev::{NetDevice, MODE_AP, MODE_STA, RADIO_MODE};
 
 // Статическая аллокация для embassy-задач (как в примерах esp-hal).
 // macro_rules виден всем модулям crate'а, объявленным после него.
@@ -68,6 +74,7 @@ mod flashcell;
 mod hangdetect;
 mod icmp;
 mod logger;
+mod netdev;
 mod power;
 mod rtcmark;
 mod sensors;
@@ -89,6 +96,11 @@ pub const LOG_URL: &str = match option_env!("LOG_URL") {
     // сами — логи только в UART/ring, адрес ставится из WebGUI в NVS.
     None => "",
 };
+
+/// Build-time пароль SoftAP-эвакуации из секрета репозитория `SOFTAP_PASS`
+/// (Gitea secrets). Если секрета нет — SoftAP-эвакуация не поднимается
+/// (NULL-пароль esp-radio запрещает, softap::ap_config это ловит).
+pub const SOFTAP_PASS: Option<&str> = option_env!("SOFTAP_PASS");
 
 /// Сколько секунд даём новому (неподтверждённому) образу подтвердиться
 /// (`confirm_app_alive` — циклы индикации; Wi-Fi условием не является).
@@ -330,7 +342,9 @@ async fn main(spawner: Spawner) -> ! {
     let (stack, runner) = embassy_net::new(
         // ICMP echo (ping) отвечают на уровне драйвера: smoltcp не принимает
         // Echo Request с произвольным identifier. См. firmware/src/icmp.rs.
-        icmp::IcmpDevice::new(Interface::station()),
+        // NetDevice — диспетчер STA/SoftAP поверх одного стека (проектная
+        // точка «один embassy_net на смену режимов», см. firmware/src/netdev.rs).
+        icmp::IcmpDevice::new(NetDevice::new()),
         embassy_net::Config::dhcpv4(Default::default()),
         // smoltcp SocketSet фиксированный: DHCP занимает 1 слот, каждый
         // DnsSocket (logger + updater) и каждый TcpSocket сервера — ещё слоты,
@@ -409,13 +423,29 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(ui::button_task(peripherals.GPIO0).unwrap());
 
     spawner.spawn(clock::sntp_task(stack).unwrap());
+    // SoftAP-эвакуация (issue #6, п.3): пароль — из build-time секрета
+    // репозитория SOFTAP_PASS; без валидного секрета эвакуация выключена.
+    let softap_creds: Option<WifiCredentials> =
+        SOFTAP_PASS.and_then(|p| softap::ap_credentials(p));
+    if softap_creds.is_none() {
+        log::warn!("softap evacuation disabled: no valid SOFTAP_PASS build-time secret");
+    }
     match controller.take() {
         Some(ctrl) => spawner.spawn(
-            connection(ctrl, wifi_ssid.unwrap_or_else(heapless::String::new)).unwrap(),
+            connection(
+                ctrl,
+                wifi_ssid.unwrap_or_else(heapless::String::new),
+                softap_creds,
+                stack,
+            )
+            .unwrap(),
         ),
         None => log::warn!("wifi task skipped: no valid credentials (clock runs offline)"),
     };
     spawner.spawn(status_task(stack).unwrap());
+    // DHCP-сервер SoftAP (порт :67): слушает только пока поднят AP — см.
+    // dhcpd_task. Сокет smoltcp занимает слот только в активном режиме.
+    spawner.spawn(dhcpd_task(stack).unwrap());
     spawner.spawn(server::server_task(stack).unwrap());
     logger::spawn_logger_task(&spawner, stack);
     spawner.spawn(updater::ota_worker_task(stack).unwrap());
@@ -462,7 +492,7 @@ async fn wdt_task(mut rtc: Rtc<'static>) {
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, icmp::IcmpDevice<Interface>>) {
+async fn net_task(mut runner: Runner<'static, icmp::IcmpDevice<NetDevice>>) {
     runner.run().await
 }
 
@@ -495,7 +525,12 @@ async fn status_task(stack: Stack<'static>) {
 }
 
 #[embassy_executor::task]
-async fn connection(mut controller: WifiController<'static>, want: heapless::String<32>) {
+async fn connection(
+    mut controller: WifiController<'static>,
+    want: heapless::String<32>,
+    softap_creds: Option<WifiCredentials>,
+    stack: Stack<'static>,
+) {
     loop {
         // Лестница ретраев (core::diag): 5 с → 15 с → 60 с → 300 с. Креды при
         // неудаче НЕ удаляем — AP могла лечь/перестроиться, восстановим.
@@ -531,9 +566,202 @@ async fn connection(mut controller: WifiController<'static>, want: heapless::Str
                 let (seen_any, target_seen) =
                     log_wifi_scan_diag(&mut controller, &want, "after-failure").await;
                 clock_core::diag::note_scan(seen_any, target_seen);
+                // SoftAP-эвакуация (issue #6, п.3): серия неудач -> на время
+                // поднимаем собственную точку, чтобы можно было зайти на часы
+                // напрямую (192.168.139.100 -> 192.168.139.1).
+                if softap_creds.is_some()
+                    && clock_core::diag::ap_fallback_due()
+                    && rescue_softap_ap(&mut controller, &stack, softap_creds.as_ref()).await
+                {
+                    clock_core::diag::note_connect_ok();
+                }
             }
         }
         Timer::after_secs(pause).await;
+    }
+}
+
+/// Поднимает SoftAP поверх того же embassy-net стека (NetDevice переключает
+/// трафик по `RADIO_MODE`), ждёт клиента (окно 30 мин), затем штатно гасит
+/// AP и возвращает стек в STA/DHCP. Возвращает true, если эвакуация
+/// отработала (клиент хотя бы раз подключался).
+async fn rescue_softap_ap(
+    controller: &mut WifiController<'static>,
+    stack: &Stack<'static>,
+    creds: Option<&WifiCredentials>,
+) -> bool {
+    let Some(creds) = creds else { return false };
+    // Собираем AP-конфиг из уже валидированных кредов (валидация пароля —
+    // та же WifiCredentials-проверка, что и у STA; channel 1 — фиксированный).
+    let cfg = AccessPointConfig::default()
+        .with_ssid(creds.ssid.as_str().try_into().unwrap())
+        .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+            creds.password.as_str().try_into().unwrap(),
+        ))
+        .with_max_connections(1u16);
+    let mut ap_ip = heapless::String::<15>::new();
+    let mut client_ip = heapless::String::<15>::new();
+    softap::ipv4_str(softap::AP_IP, &mut ap_ip);
+    softap::ipv4_str(softap::AP_CLIENT_IP, &mut client_ip);
+    log::warn!(
+        "softap evacuation: AP '{}' up, client fixed {} -> AP {}; wait up to 1800s",
+        cfg.ssid.as_str(),
+        client_ip,
+        ap_ip,
+    );
+    RADIO_MODE.store(MODE_AP, Ordering::SeqCst);
+    if let Err(e) = controller.set_config(WifiConfig::AccessPoint(cfg)) {
+        log::error!("softap set_config failed: {:?} — back to station", e);
+        RADIO_MODE.store(MODE_STA, Ordering::SeqCst);
+        return false;
+    }
+    stack.set_config_v4(ConfigV4::Static(StaticConfigV4 {
+        address: Ipv4Cidr::new(Ipv4Address::from_bytes(softap::AP_IP), softap::AP_PREFIX),
+        gateway: None,
+        dns_servers: heapless::Vec::new(),
+    }));
+    icmp::set_our_ip(softap::AP_IP);
+    netdev::AP_ACTIVE.store(1, Ordering::SeqCst);
+
+    let mut served = false;
+    // Окно эвакуации: ждём клиента (или уже пришедший disconnect) 30 мин.
+    match embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(1800),
+        controller.wait_for_access_point_connected_event_async(),
+    )
+    .await
+    {
+        Ok(Ok(esp_radio::wifi::ap::EventInfo::Connected(info))) => {
+            served = true;
+            log::info!(
+                "softap client joined: mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} aid={} — serving via dhcpd",
+                info.mac[0],
+                info.mac[1],
+                info.mac[2],
+                info.mac[3],
+                info.mac[4],
+                info.mac[5],
+                info.aid,
+            );
+            // Держим AP, пока клиент не уйдёт (или 30 мин истекли).
+            let _ = embassy_time::with_timeout(
+                embassy_time::Duration::from_secs(1800),
+                controller.wait_for_access_point_connected_event_async(),
+            )
+            .await;
+        }
+        Ok(Ok(esp_radio::wifi::ap::EventInfo::Disconnected(info))) => {
+            log::warn!("softap client left before we waited: {:?}", info.reason);
+        }
+        Ok(Err(e)) => {
+            log::error!("softap event wait failed: {:?} — abort evacuation", e);
+        }
+        Err(_) => {
+            log::warn!("softap evacuation window expired (1800s), no client");
+        }
+    }
+
+    // Возврат в STA: режим -> радио -> конфиг стека. Порядок фиксированный
+    // (сначала флаг, потом set_config — Runner не увидит AP-кадры в STA-фазе).
+    netdev::AP_ACTIVE.store(0, Ordering::SeqCst);
+    RADIO_MODE.store(MODE_STA, Ordering::SeqCst);
+    let station = StationConfig::default()
+        .with_ssid(SSID.as_bytes().try_into().unwrap_or_else(|_| heapless::Vec::new()))
+        .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+            PASSWORD.as_bytes().try_into().unwrap_or_else(|_| heapless::Vec::new()),
+        ));
+    if let Err(e) = controller.set_config(WifiConfig::Station(station)) {
+        log::error!("station reconfig after softap failed: {:?}", e);
+    }
+    stack.set_config_v4(embassy_net::ConfigV4::dhcpv4(Default::default()));
+    log::info!("softap evacuation done (served={}) — station mode restored", served);
+    served
+}
+
+/// DHCP-сервер SoftAP (issue #6, п.3): DISCOVER->OFFER->REQUEST->ACK для
+/// единственного клиента с фиксированным адресом 192.168.139.100 (кодек —
+/// clock_core::dhcp, побайтово закреплен хост-тестами). Сокет :67 открывается
+/// только в режиме AP (слот smoltcp в простое занимает один слот из 12);
+/// ответы уходят unicast на yiaddr клиента (broadcast-флаг запроса
+/// игнорируется — smoltcp не резолвит /24 broadcast через ARP; риск помечен
+/// на стендовом тесте). Вне AP таск просто ждёт флага.
+#[embassy_executor::task]
+async fn dhcpd_task(stack: Stack<'static>) {
+    use embassy_net::UdpSocket;
+    use embassy_net::stack::UdpMetadata;
+    use embassy_net:: IpListenEndpoint;
+    use clock_core::dhcp as d;
+
+    let mut lease = d::Lease::idle();
+    loop {
+        if !netdev::ap_is_active() {
+            Timer::after_millis(500).await;
+            continue;
+        }
+        let mut sock = UdpSocket::new(stack);
+        if let Err(e) = sock.bind(IpListenEndpoint { addr: None, port: 67 }) {
+            log::warn!("dhcpd bind :67 failed: {:?} — retry in 5s", e);
+            Timer::after_secs(5).await;
+            continue;
+        }
+        log::info!("dhcpd serving :67 (fixed client -> 192.168.139.100)");
+        let mut rx = [0u8; 576];
+        while netdev::ap_is_active() {
+            let (n, meta) = match embassy_time::with_timeout(
+                embassy_time::Duration::from_secs(2),
+                sock.recv_from(&mut rx),
+            )
+            .await
+            {
+                Ok(Ok(v)) => v,
+                // Truncated: DHCPoption-шквал длиннее буфера — режем и игнорируем.
+                Ok(Err(e)) => {
+                    log::warn!("dhcpd recv error: {:?}", e);
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            let pkt = &rx[..n];
+            let req = match d::parse(pkt) {
+                Ok(r) => r,
+                Err(why) => {
+                    log::debug!("dhcpd: drop bad packet ({} B): {}", n, why);
+                    continue;
+                }
+            };
+            let now = embassy_time::Instant::now().as_secs();
+            let action = lease.on(&req, now, d::LEASE_SECS);
+            let reply: Option<heapless::Vec<u8, d::MAX_REPLY>> = match action {
+                d::LeaseAction::Offer => {
+                    d::build_offer(&req, d::CLIENT_IP, d::AP_IP, d::LEASE_SECS).ok()
+                }
+                d::LeaseAction::Ack => d::build_ack(&req, d::CLIENT_IP, d::AP_IP, d::LEASE_SECS).ok(),
+                d::LeaseAction::Nak => d::build_nak(&req, d::AP_IP).ok(),
+                d::LeaseAction::Ignore => None,
+            };
+            let Some(reply) = reply else { continue };
+            // Ответы — на subnet broadcast 192.168.139.255:68: smoltcp
+            // (iface/interface/mod.rs:1050 lookup_hardware_addr) шлёт broadcast
+            //_frames_ напрямую на ff:ff:.. через WiFi AP, без ARP — единственный
+            // способ, который примет клиент на DISCOVER (у него ещё нет IP).
+            let dst = (embassy_net::Ipv4Address::new(192, 168, 139, 255), 68_u16);
+            match sock.send_to(&reply, dst).await {
+                Ok(()) => log::info!(
+                    "dhcpd: {:?} -> 192.168.139.255:68 (mac {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                    action,
+                    req.chaddr[0],
+                    req.chaddr[1],
+                    req.chaddr[2],
+                    req.chaddr[3],
+                    req.chaddr[4],
+                    req.chaddr[5],
+                ),
+                Err(e) => log::warn!("dhcpd send {:?} failed: {:?}", action, e),
+            }
+        }
+        sock.close();
+        lease = d::Lease::idle();
+        log::info!("dhcpd closed (:67 released)");
     }
 }
 
