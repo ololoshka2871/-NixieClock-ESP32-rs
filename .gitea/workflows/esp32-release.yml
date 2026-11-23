@@ -38,6 +38,8 @@ jobs:
           SSID: ${{ secrets.SSID }}
           PASSWORD: ${{ secrets.PASSWORD }}
           LOG_URL: ${{ vars.LOG_URL || 'http://192.168.0.28/logs' }}
+          # без секрета release-образ умеет только STA: SoftAP-эвакуация выключена
+          SOFTAP_PASS: ${{ secrets.SOFTAP_PASS }}
         run: bash tools/ci_build.sh
 
       - name: Publish release

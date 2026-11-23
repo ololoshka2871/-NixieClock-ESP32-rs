@@ -40,6 +40,9 @@ jobs:
           SSID: ${{ secrets.SSID }}
           PASSWORD: ${{ secrets.PASSWORD }}
           LOG_URL: ${{ vars.LOG_URL || 'http://192.168.0.28/logs' }}
+          # SoftAP-эвакуация (core::softap) существует только при этом секрете:
+          # без него main.rs оставляет softap_creds=None и rescue-AP не поднимается.
+          SOFTAP_PASS: ${{ secrets.SOFTAP_PASS }}
         run: bash tools/ci_build.sh
 
       - name: Upload firmware artifact
