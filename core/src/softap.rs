@@ -62,8 +62,12 @@ mod tests {
     fn creds_validation_rejects_junk() {
         assert!(ap_credentials("normal-pass-123").is_some());
         assert!(ap_credentials("").is_none());
-        assert!(ap_credentials("has \"quote").is_none());
-        assert!(ap_credentials(&"x".repeat(70)).is_none());
+        assert!(ap_credentials("short").is_none()); // < PASS_MIN
+        // Кавычки в пароле легальны (печатный ASCII; экранирует JSON-сервер),
+        // а вот не-ASCII (например NUL) — нет.
+        assert!(ap_credentials("has \"quote").is_some());
+        assert!(ap_credentials("nul\0inside").is_none());
+        assert!(ap_credentials(&"x".repeat(70)).is_none()); // > PASS_MAX
         let c = ap_credentials("secret-from-ci").unwrap();
         assert_eq!(c.ssid.as_str(), AP_SSID);
     }
