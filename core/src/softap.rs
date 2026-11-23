@@ -10,7 +10,9 @@
 //!   SoftAP **не включается** (никаких плейсхолдеров: образ с плейсхолдером
 //!   вместо пароля уже выводил плату из сети).
 
-use crate::settings::WifiCredentials;
+// Реэкспорт: firmware импортирует креды как `clock_core::softap::WifiCredentials`
+// (main.rs,SoftAP-эвакуация); сам тип живёт в settings.
+pub use crate::settings::WifiCredentials;
 
 /// SSID режимы точки доступа.
 pub const AP_SSID: &str = "Nixie-Clock-IN14";

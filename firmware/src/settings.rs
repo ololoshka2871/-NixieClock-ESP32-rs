@@ -117,7 +117,9 @@ pub fn load_wifi() -> Option<WifiCredentials> {
 
 /// Сохранить креды в NVS (после валидации spa-моделью).
 pub fn save_wifi(creds: &WifiCredentials) -> Result<(), &'static str> {
-    with_nvs(|nvs| {
+    // let r + r? (образец save_color): без этого ошибка записи из замыкания
+    // выбрасывалась и страница считала креды сохранёнными.
+    let r = with_nvs(|nvs| {
         nvs.set(&NS, &K_SSID, creds.ssid.as_str())
             .map_err(|_| "nvs: запись ssid")?;
         nvs.set(&NS, &K_PASS, creds.password.as_str())
@@ -131,7 +133,9 @@ pub fn save_wifi(creds: &WifiCredentials) -> Result<(), &'static str> {
         );
         Ok(())
     })
-    .ok_or("nvs: раздел недоступен")?
+    .ok_or("nvs: раздел недоступен")?;
+    r?;
+    Ok(())
 }
 
 /// Прочитать NTP-сервер; None — не сохранён/пустой (значит встроенные пулы).
@@ -155,7 +159,7 @@ pub fn load_ntp() -> Option<String<64>> {
 /// Сохранить/сбросить NTP-сервер (Some("") или None = сброс на пулы по умолчанию).
 pub fn save_ntp(server: Option<&str>) -> Result<(), &'static str> {
     let value = server.unwrap_or("");
-    with_nvs(|nvs| {
+    let r = with_nvs(|nvs| {
         nvs.set(&NS, &K_NTP, value)
             .map_err(|_| "nvs: запись ntp_server")?;
         log::info!(
@@ -164,7 +168,9 @@ pub fn save_ntp(server: Option<&str>) -> Result<(), &'static str> {
         );
         Ok(())
     })
-    .ok_or("nvs: раздел недоступен")?
+    .ok_or("nvs: раздел недоступен")?;
+    r?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +235,7 @@ pub fn save_log_url(url: Option<&str>) -> Result<(), &'static str> {
         Ok(v) => v,
         Err(e) => return Err(e),
     };
-    with_nvs(|nvs| {
+    let r = with_nvs(|nvs| {
         nvs.set(&NS, &K_LOG_URL, stored.as_str())
             .map_err(|_| "nvs: запись log_url")?;
         log::info!(
@@ -239,6 +245,7 @@ pub fn save_log_url(url: Option<&str>) -> Result<(), &'static str> {
         Ok::<(), &'static str>(())
     })
     .ok_or("nvs: раздел недоступен")?;
+    r?;
     apply_log_url_runtime(stored.as_str());
     Ok(())
 }
@@ -276,13 +283,15 @@ pub fn load_tz() -> Option<i16> {
 
 /// Сохранить смещение пояса. Часы остаются в UTC — это только отображение.
 pub fn save_tz(minutes: i16) -> Result<(), &'static str> {
-    with_nvs(|nvs| {
+    let r = with_nvs(|nvs| {
         nvs.set(&NS, &K_TZ, minutes as i32)
             .map_err(|_| "nvs: запись tz_min")?;
         log::info!("NVS: часовой пояс {:+.2} ч от UTC", minutes as f32 / 60.0);
         Ok(())
     })
-    .ok_or("nvs: раздел недоступен")?
+    .ok_or("nvs: раздел недоступен")?;
+    r?;
+    Ok(())
 }
 
 /// Прочитать сохранённый цвет подсветки часов; None — ключа нет (цвет месяца).

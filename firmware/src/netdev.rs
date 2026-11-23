@@ -33,7 +33,8 @@ pub static RADIO_MODE: AtomicU8 = AtomicU8::new(MODE_STA);
 /// 1 = SoftAP поднят (шлюза/DNS нет): гейт для логгера/SNTP/OTA и /api/status.
 pub static AP_ACTIVE: AtomicU8 = AtomicU8::new(0);
 
-pub const fn ap_is_active() -> bool {
+// Не const fn: AtomicU8::load — не const-вызов (E0015 на stable rustc).
+pub fn ap_is_active() -> bool {
     AP_ACTIVE.load(Ordering::SeqCst) == 1
 }
 
