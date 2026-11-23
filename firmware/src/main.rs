@@ -496,7 +496,6 @@ async fn status_task(stack: Stack<'static>) {
 
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>, want: heapless::String<32>) {
-    let mut first_ok = true;
     loop {
         match controller.connect_async().await {
             Ok(info) => {
@@ -512,10 +511,6 @@ async fn connection(mut controller: WifiController<'static>, want: heapless::Str
                     info.bssid[4],
                     info.bssid[5]
                 );
-                if first_ok {
-                    first_ok = false;
-                    log_wifi_scan_diag(&mut controller, &want, "post-connect").await;
-                }
                 let d = controller.wait_for_disconnect_async().await;
                 log::warn!("wifi disconnected: {:?}", d);
             }
@@ -528,10 +523,16 @@ async fn connection(mut controller: WifiController<'static>, want: heapless::Str
     }
 }
 
-/// Диагностика Wi-Fi: скан эфира с каналом и RSSI каждой точки. При неудачном
-/// подключении показывает, видит ли радио нужный SSID и на каком канале он
-/// вещает (главный кандидат при отказе ассоциации); при успешном — подтверждает
-/// канал/RSSI, на которых ассоциировались.
+/// Диагностика Wi-Fi: скан эфира с каналом и RSSI каждой точки — **только при
+/// неудачном подключении**. Показывает, видит ли радио нужный SSID и на каком
+/// канале он вещает (главный кандидат при отказе ассоциации).
+///
+/// Сканирование сразу после успешной ассоциации намеренно **не** делаем:
+/// esp-radio/esp-wifi в состоянии STA-associated отдаёт неполный результат
+/// (на плате фиксировалось `1 AP(s)` без целевой сети) — строка ввела бы в
+/// заблуждение. Канал/BSSID успешного коннекта даёт `connect_async` (log
+/// `wifi connected: ch=... bssid=...`), скан при connected+без DHCP — удел
+/// отдельной диагностики.
 async fn log_wifi_scan_diag(
     controller: &mut WifiController<'static>,
     want: &heapless::String<32>,
