@@ -42,8 +42,8 @@ ESP-IDF. База OTA/rollback — проверенный шаблон Home/esp3
   `SOFTAP_PASS`); та же точка доступа поднимается на старте, если в NVS нет
   валидных кредов. Креды задаются через WebUI (captive-portal POST /wifi) и
   хранятся в NVS.
-- Wi-Fi сканер и подбор точки доступа при сбое соединения; ICNP — ответы на
-  ping (feature `icnp`).
+- Wi-Fi сканер и подбор точки доступа при сбое соединения; ICMP — ответы на
+  ping (feature `icmp`).
 
 ### WebUI и HTTP API
 SPA из коробки прошивки (статика вшита в `core/src/assets`): статус, время/TZ,
