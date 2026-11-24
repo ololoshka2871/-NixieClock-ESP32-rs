@@ -12,9 +12,10 @@
 //! видом через `recv_cb_ap` -> `DATA_QUEUE_RX_AP` — отдельной среды не нужно
 //! (`medium-ethernet` уже включён в Cargo.toml).
 //!
-//! Порядок переключения (в connection-таске, он единственный владелец
-//! контроллера): `RADIO_MODE.store` -> `controller.set_config` ->
-//! `stack.set_config_v4`. `set_config` рвёт радио и все открытые сокеты —
+//! Порядок переключения (владелец контроллера — connection-таск либо
+//! стартовый ap_mode_task): `RADIO_MODE.store` -> `controller.set_config` ->
+//! `stack.set_config_v4`. На старте AP конфиг задаётся сразу `initial_config`,
+//! поэтому `set_config` не нужен. `set_config` рвёт радио и все открытые сокеты —
 //! задачи сервера/логгера/SNTP переживают это штатными ретраями.
 //! `embassy_net::Runner::poll` перечитывает `hardware_address()` каждый поллин
 //! (lib.rs:856-868) и сам обновляет MAC в smoltcp — MAC AP подхватится сам.

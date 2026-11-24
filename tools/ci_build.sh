@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Единая сборка прошивки приложения для CI (PR- и release-workflow).
-# Ожидает в env: SSID, PASSWORD (секреты репозитория), LOG_URL (переменная),
-# SOFTAP_PASS (секрет; без него main.rs оставляет softap_creds=None и
-# SoftAP-эвакуация выключена — в логе сборки это видно по NOTE ниже).
-# Пустые SSID/PASSWORD снимаются -> в дело идут плейсхолдеры из
-# firmware/.cargo/config.toml (CI гарантированно собираем и без секретов).
+# Ожидает в env: SSID, PASSWORD (секреты репозитория, оба необязательны),
+# LOG_URL (переменная), SOFTAP_PASS (секрет либо fallback из [env] config.toml).
+# Пустой SSID — нормальный сценарий: образ стартует в setup-SoftAP, чтобы
+# настроить Wi-Fi через WebGUI. Без секретов сборка тоже проходит.
 set -euo pipefail
 export PATH="/root/.cargo/bin:$HOME/.espflash/bin:$PATH"
 # xtensa gcc из espup-тулчейна (CI-образ задаёт PATH через ENV, dev-контейнер — нет)
@@ -27,6 +26,8 @@ cp "$ELF" dist/app.elf
 
 # OTA-образ: app-only (кладётся в OTA-слот через /ota на плате; merged не нужен —
 # загрузчик с rollback уже прошит в flash один раз, см. README).
+# Размер держим за счёт -Wl,--no-eh-frame-hdr из firmware/.cargo/config.toml:
+# без него .eh_frame_hdr добавляет ~12.8 КБ и образ не лезет в 917504 B.
 espflash save-image --chip esp32 "$ELF" dist/app_ota.bin
 od -A x -N 4 dist/app_ota.bin
 python3 tools/check_ota_image.py dist/app_ota.bin --max-size 917504
@@ -39,9 +40,9 @@ espflash save-image --chip esp32 --merge --skip-padding \
   --partition-table partitions_2mb.csv "$ELF" dist/firmware_uart.bin
 od -A x -j 0x8000 -N 2 dist/firmware_uart.bin
 
-# Гат кредал: env!("SSID") и env!("PASSWORD") склеены в rodata в один
-# printable-забег. Если CI потерял секреты, вместо них плейсхолдеры из
-# config.toml -> плата уходит offline после бутa (печатаем только длины).
+# Гат кредал: при наличии секрета SSID/PASSWORD они склеены в rodata в один
+# printable-забег (печатаем только длины). Без секрета SSID пустой — это не
+# ошибка: плата поднимет setup-SoftAP и примет креды через WebGUI.
 if [ -n "${SSID:-}" ]; then
   cred_tail=$(tr -c '[:print:]' '\n' < dist/app_ota.bin | sed -n "s|^${SSID}||p" | head -1 | tr -d '\r\n')
   if [ "${#cred_tail}" != "${#PASSWORD}" ]; then
@@ -50,12 +51,12 @@ if [ -n "${SSID:-}" ]; then
   fi
   echo "gate: station credential baked in (len=${#cred_tail})"
 else
-  echo "NOTE: SSID secret empty -> build carries config.toml placeholders"
+  echo "NOTE: no SSID secret -> device will boot into setup SoftAP"
 fi
 if [ -n "${SOFTAP_PASS:-}" ]; then
-  echo "gate: softap evacuation ENABLED (len=${#SOFTAP_PASS})"
+  echo "gate: setup/evacuation AP password from CI secret (len=${#SOFTAP_PASS})"
 else
-  echo "NOTE: SOFTAP_PASS secret not set -> SoftAP evacuation compiled out"
+  echo "NOTE: SOFTAP_PASS secret empty -> using [env] fallback from config.toml"
 fi
 
 sha256sum dist/app_ota.bin dist/app.elf dist/firmware_uart.bin > dist/sha256.txt

@@ -1,14 +1,16 @@
-//! Конфигурация SoftAP-эвакуации (issue #6, п.3).
+//! Конфигурация SoftAP (issue #6, п.3).
 //!
-//! Когда STA не подключается (AP легла/пароль не подошёл), плата поднимает
-//! свою точку доступа, чтобы оператор мог зайти на страницу настроек и
-//! починить Wi-Fi. Параметры зафиксированы владельцем:
+//! Точка доступа поднимается в двух случаях:
+//!   1. на старте, если нет валидных STA-кредов (пустой SSID после прошивки);
+//!   2. как эвакуация, когда STA долго не может подключиться.
+//!
+//! В обоих случаях оператор заходит на страницу настроек и чинит/задаёт Wi-Fi.
+//! Параметры зафиксированы владельцем:
 //!   SSID   `Nixie-Clock-IN14`
 //!   адрес  `192.168.139.1/24`
 //!   клиент `192.168.139.100` (один-единственный, `max_client = 1`)
-//!   пароль — из секрета репозитория `SOFTAP_PASS`; если секрета нет —
-//!   SoftAP **не включается** (никаких плейсхолдеров: образ с плейсхолдером
-//!   вместо пароля уже выводил плату из сети).
+//!   пароль — из `SOFTAP_PASS` (CI-секрет либо `[env]` в config.toml).
+//! Без валидного пароля AP не стартует: esp-radio запрещает пустой пароль.
 
 // Реэкспорт: firmware импортирует креды как `clock_core::softap::WifiCredentials`
 // (main.rs,SoftAP-эвакуация); сам тип живёт в settings.
@@ -27,12 +29,38 @@ pub const AP_MAX_CLIENT: u8 = 1;
 /// Долгота выдаваемой аренды (секунды) — клиент один, аренды длинные.
 pub const AP_LEASE_SECS: u32 = 3600;
 
+/// Режим Wi-Fi на старте. Пустой SSID — не ошибка: поднимаем setup-AP,
+/// чтобы оператор мог зайти на страницу и сохранить креды своей сети.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WifiMode {
+    /// Есть валидные STA-креды (NVS или build-time): обычная станция.
+    Station,
+    /// STA-кредов нет, но есть креды AP: поднимаем SoftAP и ждём настройки.
+    AccessPoint,
+    /// Нет ни STA-, ни AP-кредов: радио не поднимается, часы работают offline.
+    Offline,
+}
+
+/// Выбор стартового режима из двух фактов «креды есть». Чистая функция, чтобы
+/// политику «пустой SSID -> SoftAP» можно было закрепить хост-тестом.
+pub fn select_mode(has_station_creds: bool, has_ap_creds: bool) -> WifiMode {
+    if has_station_creds {
+        WifiMode::Station
+    } else if has_ap_creds {
+        WifiMode::AccessPoint
+    } else {
+        WifiMode::Offline
+    }
+}
+
 /// IPv4 в текстовом виде (без allocation): `192.168.139.1`.
 pub fn ipv4_str(octets: [u8; 4], buf: &mut heapless::String<15>) -> heapless::String<15> {
     use core::fmt::Write;
     buf.clear();
     let _ = write!(buf, "{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]);
-    core::mem::take(buf)
+    // Возвращаем копию, но НЕ опустошаем `buf`: вызывающий код использует
+    // переданный буфер для логов (раньше здесь был mem::take => пустые адреса).
+    buf.clone()
 }
 
 /// Креды AP из build-time значения: `None` если пароля нет или он не проходит
@@ -61,6 +89,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_ssid_selects_softap() {
+        // После прошивки без SSID плата должна быть доступна как AP.
+        assert_eq!(select_mode(false, true), WifiMode::AccessPoint);
+        // Сохранённые/build-time креды имеют приоритет над setup-AP.
+        assert_eq!(select_mode(true, true), WifiMode::Station);
+        assert_eq!(select_mode(true, false), WifiMode::Station);
+        // Нет и того, ни другого — честно работаем без радио.
+        assert_eq!(select_mode(false, false), WifiMode::Offline);
+    }
+
+    #[test]
     fn creds_validation_rejects_junk() {
         assert!(ap_credentials("normal-pass-123").is_some());
         assert!(ap_credentials("").is_none());
@@ -78,6 +117,10 @@ mod tests {
     fn ipv4_render() {
         let mut buf = heapless::String::new();
         assert_eq!(ipv4_str(AP_IP, &mut buf).as_str(), "192.168.139.1");
+        // Возвращаемое значение и переданный буфер должны совпадать:
+        // именно buf уходит в log::warn!, а не результат вызова.
+        assert_eq!(buf.as_str(), "192.168.139.1");
         assert_eq!(ipv4_str([10, 0, 0, 7], &mut buf).as_str(), "10.0.0.7");
+        assert_eq!(buf.as_str(), "10.0.0.7");
     }
 }

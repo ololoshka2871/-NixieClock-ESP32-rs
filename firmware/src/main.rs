@@ -88,8 +88,16 @@ mod ws2812;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-pub const SSID: &str = env!("SSID");
-pub const PASSWORD: &str = env!("PASSWORD");
+/// STA-креды из env необязательны: после прошивки SSID может быть пустым.
+/// В этом случае вместо «offline» поднимается setup-SoftAP (см. `select_mode`).
+pub const SSID: &str = match option_env!("SSID") {
+    Some(v) => v,
+    None => "",
+};
+pub const PASSWORD: &str = match option_env!("PASSWORD") {
+    Some(v) => v,
+    None => "",
+};
 pub const LOG_URL: &str = match option_env!("LOG_URL") {
     Some(v) => v,
     // Коллектор опционален (issue #6): без build-time адреса часы работают
@@ -97,9 +105,9 @@ pub const LOG_URL: &str = match option_env!("LOG_URL") {
     None => "",
 };
 
-/// Build-time пароль SoftAP-эвакуации из секрета репозитория `SOFTAP_PASS`
-/// (Gitea secrets). Если секрета нет — SoftAP-эвакуация не поднимается
-/// (NULL-пароль esp-radio запрещает, softap::ap_config это ловит).
+/// Build-time пароль SoftAP: секрет репозитория `SOFTAP_PASS`, а при его
+/// отсутствии — значение из `[env]` firmware/.cargo/config.toml. Оба пути
+/// идут через `option_env!`, поэтому setup-AP есть и на образе без STA-кредов.
 pub const SOFTAP_PASS: Option<&str> = option_env!("SOFTAP_PASS");
 
 /// Сколько секунд даём новому (неподтверждённому) образу подтвердиться
@@ -111,7 +119,7 @@ pub const WDT_TIMEOUT_SECS: u64 = 30;
 pub static PENDING_BOOT: AtomicBool = AtomicBool::new(false);
 pub static BOOT_CONFIRMED: AtomicBool = AtomicBool::new(false);
 pub static ROLLBACK_LATCHED: AtomicBool = AtomicBool::new(false);
-/// Wi-Fi реально поднят (есть валидные креды и контроллер инициализирован).
+/// Wi-Fi реально поднят: STA подключён либо работает setup/эвакуационный AP.
 /// False — устройство живёт без сети: индикация, датчики и локальные логи
 /// работают как обычно, недоступен только HTTP/OTA по LAN.
 pub static WIFI_READY: AtomicBool = AtomicBool::new(false);
@@ -284,13 +292,16 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     // WiFi: сохранённые в NVS креды; если их нет — креды из времени сборки (env).
-    // Ни того, ни другого нет (или креды невалидны) — НЕ паникуем: часы живут
-    // без сети, Wi-Fi настраивается позже (POST /api/wifi) либо UART-прошивкой.
+    // Пустой SSID после прошивки — штатный случай: поднимаем setup-SoftAP,
+    // чтобы оператор зашёл на страницу и сохранил креды своей сети (issue #6).
     let creds = wifi_credentials();
+    let softap_creds: Option<WifiCredentials> =
+        SOFTAP_PASS.and_then(|p| softap::ap_credentials(p));
+    let wifi_mode = softap::select_mode(creds.is_some(), softap_creds.is_some());
     let wifi_ssid: Option<heapless::String<32>> = creds.as_ref().map(|c| c.ssid.clone());
     // Копия кредов станции: нужны connection-таску для возврата из SoftAP-эвакуации
-    // в STA (build-time SSID/PASSWORD могли остаться плейсхолдерами, если креды
-    // взяты из NVS).
+    // в STA (build-time SSID/PASSWORD могли остаться пустыми, если креды взяты
+    // из NVS).
     let station_creds = creds.clone();
     settings::set_active(&creds.clone().unwrap_or_default(), settings::load_wifi().is_some());
     // Пояс из NVS: до старта индикации и часовых задач.
@@ -302,25 +313,57 @@ async fn main(spawner: Spawner) -> ! {
         Some(u) => settings::apply_log_url_runtime(u.as_str()),
         None => settings::apply_log_url_runtime(LOG_URL),
     }
-    // Wi-Fi поднимается только если есть валидные креды. Без них сеть просто
-    // отсутствует — индикация, датчики, SNTP-задачи и локальные логи работают.
-    let mut controller = creds.and_then(|c| {
-        let station = StationConfig::default()
-            .with_ssid(c.ssid.as_str().try_into().unwrap())
-            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
-                c.password.as_str().try_into().unwrap(),
-            ));
-        match WifiController::new(
-            peripherals.WIFI,
-            ControllerConfig::default().with_initial_config(WifiConfig::Station(station)),
-        ) {
-            Ok(ctrl) => Some(ctrl),
-            Err(e) => {
-                log::error!("wifi init failed ({:?}) — running without wifi", e);
-                None
+    // Контроллер создаём сразу в нужном режиме: AP-конфиг на старте дешевле и
+    // надёжнее, чем «сначала STA, потом эвакуация» — при пустом SSID STA
+    // вообще нечего поднимать. NetDevice переключает только RADIO_MODE,
+    // поэтому флаг выставляем ДО инициализации радио (пакеты AP не потеряются).
+    let mut controller = match wifi_mode {
+        softap::WifiMode::Station => match creds.as_ref() {
+            Some(c) => {
+                let station = StationConfig::default()
+                    .with_ssid(c.ssid.as_str().try_into().unwrap())
+                    .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+                        c.password.as_str().try_into().unwrap(),
+                    ));
+                match WifiController::new(
+                    peripherals.WIFI,
+                    ControllerConfig::default().with_initial_config(WifiConfig::Station(station)),
+                ) {
+                    Ok(ctrl) => Some(ctrl),
+                    Err(e) => {
+                        log::error!("wifi init failed ({:?}) — running without wifi", e);
+                        None
+                    }
+                }
+            }
+            None => None, // недостижимо: select_mode проверил креды
+        },
+        softap::WifiMode::AccessPoint => {
+            RADIO_MODE.store(MODE_AP, Ordering::SeqCst);
+            match softap_creds.as_ref() {
+                Some(ap) => match WifiController::new(
+                    peripherals.WIFI,
+                    ControllerConfig::default()
+                        .with_initial_config(WifiConfig::AccessPoint(softap_config(ap))),
+                ) {
+                    Ok(ctrl) => Some(ctrl),
+                    Err(e) => {
+                        log::error!("softap init failed ({:?}) — running without wifi", e);
+                        RADIO_MODE.store(MODE_STA, Ordering::SeqCst);
+                        None
+                    }
+                },
+                None => {
+                    RADIO_MODE.store(MODE_STA, Ordering::SeqCst);
+                    None
+                }
             }
         }
-    });
+        softap::WifiMode::Offline => {
+            log::warn!("no station creds and no valid SOFTAP_PASS: running without wifi");
+            None
+        }
+    };
     if let Some(ctrl) = controller.as_mut() {
         // Без light sleep: логи должны уходить без задержек.
         let _ = ctrl.set_power_saving(PowerSaveMode::None);
@@ -358,6 +401,17 @@ async fn main(spawner: Spawner) -> ! {
         mkstatic!(StackResources<12>, StackResources::<12>::new()),
         seed,
     );
+    // Стартовый AP: статический адрес и DHCP-сервер включаем до старта задач,
+    // чтобы WebUI сразу отвечал на 192.168.139.1. Контроллер уже в AP-режиме.
+    if wifi_mode == softap::WifiMode::AccessPoint && controller.is_some() {
+        if let Some(ap) = softap_creds.as_ref() {
+            activate_softap(&stack, ap);
+            log::warn!(
+                "softap boot: no station creds — setup AP '{}' is up, open http://192.168.139.1",
+                ap.ssid
+            );
+        }
+    }
 
     spawner.spawn(net_task(runner).unwrap());
     match i2c_res {
@@ -427,14 +481,14 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(ui::button_task(peripherals.GPIO0).unwrap());
 
     spawner.spawn(clock::sntp_task(stack).unwrap());
-    // SoftAP-эвакуация (issue #6, п.3): пароль — из build-time секрета
-    // репозитория SOFTAP_PASS; без валидного секрета эвакуация выключена.
-    let softap_creds: Option<WifiCredentials> =
-        SOFTAP_PASS.and_then(|p| softap::ap_credentials(p));
-    if softap_creds.is_none() {
-        log::warn!("softap evacuation disabled: no valid SOFTAP_PASS build-time secret");
-    }
+    // STA-таск нужен только при валидных креды. Стартовый AP держим до
+    // перезагрузки: WebGUI сохраняет креды в NVS и перезагружает чип, после
+    // чего select_mode выберет уже Station.
     match controller.take() {
+        Some(ctrl) if wifi_mode == softap::WifiMode::AccessPoint => match softap_creds {
+            Some(ap) => spawner.spawn(ap_mode_task(ctrl, ap).unwrap()),
+            None => log::error!("AP mode without AP credentials — impossible"),
+        },
         Some(ctrl) => spawner.spawn(
             connection(
                 ctrl,
@@ -445,7 +499,7 @@ async fn main(spawner: Spawner) -> ! {
             )
             .unwrap(),
         ),
-        None => log::warn!("wifi task skipped: no valid credentials (clock runs offline)"),
+        None => log::warn!("wifi task skipped: no usable radio configuration (clock runs offline)"),
     };
     spawner.spawn(status_task(stack).unwrap());
     // DHCP-сервер SoftAP (порт :67): слушает только пока поднят AP — см.
@@ -515,7 +569,8 @@ async fn status_task(stack: Stack<'static>) {
                 // post/uart — телеметрия канала логов: если `post` не растёт,
                 // а `hb` печатается, значит исполнитель жив, а сеть/коллектор нет.
                 log::info!(
-                    "hb: station up, ip={}, post={}ok/{}to, sending={}, uart_lost={}B",
+                    "hb: {} up, ip={}, post={}ok/{}to, sending={}, uart_lost={}B",
+                    if netdev::ap_is_active() { "softap" } else { "station" },
                     cfg.address,
                     logger::post_ok(),
                     logger::post_timeouts(),
@@ -523,7 +578,7 @@ async fn status_task(stack: Stack<'static>) {
                     uarttap::DROPPED_BYTES.load(Ordering::Relaxed),
                 );
             }
-            None => log::warn!("hb: no IP yet (wifi station not connected?)"),
+            None => log::warn!("hb: no IP yet (wifi not connected / softap not started?)"),
         }
         Timer::after_secs(30).await;
     }
@@ -593,49 +648,32 @@ async fn connection(
     }
 }
 
-/// Поднимает SoftAP поверх того же embassy-net стека (NetDevice переключает
-/// трафик по `RADIO_MODE`), ждёт клиента (окно 30 мин), затем штатно гасит
-/// AP и возвращает стек в STA/DHCP. Возвращает true, если эвакуация
-/// отработала (клиент хотя бы раз подключался).
-async fn rescue_softap_ap(
-    controller: &mut WifiController<'static>,
-    stack: &Stack<'static>,
-    creds: Option<&WifiCredentials>,
-    station_creds: Option<&WifiCredentials>,
-) -> bool {
-    let Some(creds) = creds else { return false };
-    // Собираем AP-конфиг из уже валидированных кредов (валидация пароля —
-    // та же WifiCredentials-проверка, что и у STA; channel 1 — фиксированный).
-    let cfg = AccessPointConfig::default()
+/// Конфиг SoftAP из уже валидированных кредов. Один источник и для стартового
+/// setup-AP, и для эвакуации после неудач STA (канал 1, максимум 1 клиент).
+fn softap_config(creds: &WifiCredentials) -> AccessPointConfig {
+    AccessPointConfig::default()
         .with_ssid(creds.ssid.as_str().try_into().unwrap())
         .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
             creds.password.as_str().try_into().unwrap(),
         ))
-        .with_max_connections(1u16);
+        .with_max_connections(softap::AP_MAX_CLIENT as u16)
+}
+
+/// Перевести стек на фиксированную сеть SoftAP и включить DHCP-сервер (:67).
+/// Радио и `RADIO_MODE` настраивает вызывающий: на старте AP уже задан
+/// `initial_config`, при эвакуации — `controller.set_config()` перед вызовом.
+fn activate_softap(stack: &Stack<'static>, creds: &WifiCredentials) {
     let mut ap_ip = heapless::String::<15>::new();
     let mut client_ip = heapless::String::<15>::new();
     softap::ipv4_str(softap::AP_IP, &mut ap_ip);
     softap::ipv4_str(softap::AP_CLIENT_IP, &mut client_ip);
     log::warn!(
-        "softap evacuation: AP '{}' up, client fixed {} -> AP {}; wait up to 1800s",
-        // cfg.ssid приватный (BuilderLite в esp-radio) — логируем креды, из которых
-        // cfg собран.
+        "softap up: AP '{}' at {}, DHCP client {} (no gateway/DNS)",
         creds.ssid.as_str(),
-        client_ip,
         ap_ip,
+        client_ip,
     );
-    RADIO_MODE.store(MODE_AP, Ordering::SeqCst);
-    // set_config в esp-radio beta.1 принимает &Config (синхронный) — конфиг
-    // держим локально и передаём заимствованным.
-    let apcfg = WifiConfig::AccessPoint(cfg);
-    if let Err(e) = controller.set_config(&apcfg) {
-        log::error!("softap set_config failed: {:?} — back to station", e);
-        RADIO_MODE.store(MODE_STA, Ordering::SeqCst);
-        return false;
-    }
     stack.set_config_v4(ConfigV4::Static(StaticConfigV4 {
-        // embassy_net::Ipv4Address == smoltcp 0.13.1 == core::net::Ipv4Addr:
-        // у него нет from_bytes ([u8;4] -> new по октетам).
         address: Ipv4Cidr::new(
             Ipv4Address::new(
                 softap::AP_IP[0],
@@ -650,6 +688,67 @@ async fn rescue_softap_ap(
     }));
     icmp::set_our_ip(softap::AP_IP);
     netdev::AP_ACTIVE.store(1, Ordering::SeqCst);
+}
+
+/// Стартовый setup-AP: живёт до перезагрузки, пока оператор не сохранит креды
+/// через WebGUI. Переключаться обратно в STA не нужно — сохранение кредов
+/// всегда заканчивается `software_reset()`.
+#[embassy_executor::task]
+async fn ap_mode_task(controller: WifiController<'static>, creds: WifiCredentials) {
+    log::info!(
+        "softap setup mode: '{}' is up — open http://192.168.139.1/ to save Wi-Fi",
+        creds.ssid
+    );
+    loop {
+        match controller.wait_for_access_point_connected_event_async().await {
+            Ok(esp_radio::wifi::ap::EventInfo::Connected(info)) => {
+                log::info!(
+                    "softap client joined: mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} aid={} — serving via dhcpd",
+                    info.mac[0],
+                    info.mac[1],
+                    info.mac[2],
+                    info.mac[3],
+                    info.mac[4],
+                    info.mac[5],
+                    info.aid,
+                );
+            }
+            Ok(esp_radio::wifi::ap::EventInfo::Disconnected(info)) => {
+                log::warn!("softap client left: mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} reason={:?}", info.mac[0], info.mac[1], info.mac[2], info.mac[3], info.mac[4], info.mac[5], info.reason);
+            }
+            Err(e) => {
+                log::error!("softap event wait failed: {:?} — retry", e);
+                Timer::after_secs(1).await;
+            }
+        }
+    }
+}
+
+/// Поднимает SoftAP поверх того же embassy-net стека (NetDevice переключает
+/// трафик по `RADIO_MODE`), ждёт клиента (окно 30 мин), затем штатно гасит
+/// AP и возвращает стек в STA/DHCP. Возвращает true, если эвакуация
+/// отработала (клиент хотя бы раз подключался).
+async fn rescue_softap_ap(
+    controller: &mut WifiController<'static>,
+    stack: &Stack<'static>,
+    creds: Option<&WifiCredentials>,
+    station_creds: Option<&WifiCredentials>,
+) -> bool {
+    let Some(creds) = creds else { return false };
+    log::warn!(
+        "softap evacuation: starting AP '{}' for up to 1800s after STA failures",
+        creds.ssid.as_str()
+    );
+    RADIO_MODE.store(MODE_AP, Ordering::SeqCst);
+    // set_config в esp-radio beta.1 принимает &Config (синхронный) — конфиг
+    // держим локально и передаём заимствованным.
+    let apcfg = WifiConfig::AccessPoint(softap_config(creds));
+    if let Err(e) = controller.set_config(&apcfg) {
+        log::error!("softap set_config failed: {:?} — back to station", e);
+        RADIO_MODE.store(MODE_STA, Ordering::SeqCst);
+        return false;
+    }
+    activate_softap(stack, creds);
 
     let mut served = false;
     // Окно эвакуации: ждём клиента (или уже пришедший disconnect) 30 мин.
@@ -723,9 +822,9 @@ async fn rescue_softap_ap(
 /// единственного клиента с фиксированным адресом 192.168.139.100 (кодек —
 /// clock_core::dhcp, побайтово закреплен хост-тестами). Сокет :67 открывается
 /// только в режиме AP (слот smoltcp в простое занимает один слот из 12);
-/// ответы уходят unicast на yiaddr клиента (broadcast-флаг запроса
-/// игнорируется — smoltcp не резолвит /24 broadcast через ARP; риск помечен
-/// на стендовом тесте). Вне AP таск просто ждёт флага.
+/// ответы уходят на limited broadcast 255.255.255.255:68 — до получения OFFER
+/// клиент ещё не знает свою /24 маску и directed broadcast не примет. Вне AP
+/// таск просто ждёт флага.
 #[embassy_executor::task]
 async fn dhcpd_task(stack: Stack<'static>) {
     // embassy-net 0.9.1: UdpSocket живёт в pub mod udp (на уровне crate нет
@@ -775,12 +874,29 @@ async fn dhcpd_task(stack: Stack<'static>) {
             let req = match d::parse(pkt) {
                 Ok(r) => r,
                 Err(why) => {
-                    log::debug!("dhcpd: drop bad packet ({} B): {}", n, why);
+                    log::warn!("dhcpd: drop bad packet ({} B): {}", n, why);
                     continue;
                 }
             };
+            log::info!(
+                "dhcpd: recv {} B type={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                n,
+                req.msg_type,
+                req.chaddr[0],
+                req.chaddr[1],
+                req.chaddr[2],
+                req.chaddr[3],
+                req.chaddr[4],
+                req.chaddr[5],
+            );
             let now = embassy_time::Instant::now().as_secs();
             let action = lease.on(&req, now, d::LEASE_SECS);
+            log::info!(
+                "dhcpd: action={:?} state={:?} xid={:08x}",
+                action,
+                lease.state,
+                req.xid
+            );
             // const-generic argument: константа из модуля оборачивается в {} (E0747)
             let reply: Option<heapless::Vec<u8, { d::MAX_REPLY }>> = match action {
                 d::LeaseAction::Offer => {
@@ -791,17 +907,19 @@ async fn dhcpd_task(stack: Stack<'static>) {
                 d::LeaseAction::Ignore => None,
             };
             let Some(reply) = reply else { continue };
-            // Ответы — на subnet broadcast 192.168.139.255:68: smoltcp
-            // (iface/interface/mod.rs:1050 lookup_hardware_addr) шлёт broadcast
-            //_frames_ напрямую на ff:ff:.. через WiFi AP, без ARP — единственный
-            // способ, который примет клиент на DISCOVER (у него ещё нет IP).
+            // Ответ — на limited broadcast 255.255.255.255:68 (RFC 2131: если
+            // в DISCOVER выставлен broadcast-флаг, OFFER обязан уйти именно
+            // туда). Направленный broadcast 192.168.139.255 клиент до OFFER
+            // не распознаёт: маску подсети он ещё не получил. smoltcp видит
+            // 255.255.255.255 как broadcast и шлёт кадр ff:ff:ff:ff:ff:ff
+            // через WiFi AP без ARP (iface/interface/ipv4.rs:66).
             // smoltcp 0.13.1 не имеет From<(Ipv4Address,u16)> для IpEndpoint —
             // есть From<core::net::SocketAddrV4>, по нему UdpMetadata ловится
-            // blanket-impl'ом. Broadcast 192.168.139.255:68.
-            let dst = core::net::SocketAddrV4::new(Ipv4Address::new(192, 168, 139, 255), 68);
+            // blanket-impl'ом.
+            let dst = core::net::SocketAddrV4::new(Ipv4Address::BROADCAST, 68);
             match sock.send_to(&reply, dst).await {
                 Ok(()) => log::info!(
-                    "dhcpd: {:?} -> 192.168.139.255:68 (mac {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+                    "dhcpd: {:?} -> 255.255.255.255:68 (mac {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
                     action,
                     req.chaddr[0],
                     req.chaddr[1],
@@ -877,8 +995,8 @@ pub fn wifi_diagnostics() -> (u32, u32, u64, bool, bool) {
 }
 
 /// Креды Wi-Fi: NVS > build-time (env). Отсутствие или невалидность кредов —
-/// **штатная ситуация**, а не фатальная: возвращаем None, контроллер Wi-Fi не
-/// поднимается, всё остальное (индикация, датчики, локальные логи) работает.
+/// **штатная ситуация**, а не фатальная: возвращаем None, и `select_mode`
+/// поднимает setup-SoftAP (если есть пароль AP) вместо STA.
 fn wifi_credentials() -> Option<clock_core::settings::WifiCredentials> {
     if let Some(c) = settings::load_wifi() {
         match clock_core::settings::WifiCredentials::new(c.ssid.as_str(), c.password.as_str()) {
@@ -895,7 +1013,7 @@ fn wifi_credentials() -> Option<clock_core::settings::WifiCredentials> {
             Some(v)
         }
         Err(e) => {
-            log::warn!("no wifi creds (NVS empty, build-time invalid: {e}) — running without wifi");
+            log::warn!("no wifi creds (NVS empty, build-time invalid: {e}) — setup SoftAP will be used");
             None
         }
     }

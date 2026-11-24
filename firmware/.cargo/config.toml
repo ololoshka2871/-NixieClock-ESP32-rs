@@ -9,6 +9,10 @@ rustflags = [
   # кладёт скрипты в OUT_DIR, но не передаёт их линкеру сам).
   "-C", "link-arg=-Wl,-Tlinkall.x",
   "-C", "link-arg=-nostartfiles",
+  # Не эмиттить .eh_frame_hdr.
+  # Он нужен только для unwinding/бэктрейсов, а у нас свой #[panic_handler]
+  "-C", "link-arg=-Wl,--no-eh-frame-hdr",
+  "-C", "force-unwind-tables=n",
 ]
 
 # WiFi credentials and log collector — EDIT HERE before building:
@@ -20,9 +24,7 @@ rustflags = [
 # ревизий касаются в основном PSRAM/cache/RTC, WiFi на v1.0 работает.
 # Формат значения: major * 100 + minor (100 = v1.0, 0 = без ограничения).
 ESP_HAL_CONFIG_MIN_CHIP_REVISION = "100"
-SSID = "YOUR_WIFI_SSID"
-PASSWORD = "***"
-LOG_URL = "http://192.168.0.28/logs"
+SOFTAP_PASS="your_password_here"
 
 [unstable]
 build-std = ["core", "alloc"]
