@@ -77,9 +77,12 @@ pub struct StatusSnapshot<'a> {
     pub busy: bool,
     pub wifi_ssid: Option<&'a str>,
     pub wifi_saved: bool,
-    /// Есть ли валидные креды Wi-Fi (NVS или build-time). False — устройство
-    /// живёт без сети: индикация, датчики и локальные логи работают как обычно.
+    /// Радио поднято: STA подключён к AP либо работает setup-SoftAP. False —
+    /// устройство живёт без сети (индикация, датчики и логи работают как обычно).
     pub wifi_ready: bool,
+    /// Сейчас активен setup-AP (нет STA-кредов или эвакуация после неудач):
+    /// шлюза/DNS нет, страницу настроек открываем на 192.168.139.1.
+    pub ap_active: bool,
     /// Форматированное локальное время (UTC + смещение пояса; None, если нет).
     pub time: Option<&'a str>,
     /// Смещение пояса от UTC в минутах (показ; сами часы всегда UTC).
@@ -157,8 +160,8 @@ impl StatusSnapshot<'_> {
         }
         write!(
             out,
-            ",\"wifi_saved\":{},\"wifi_ready\":{},\"time\":",
-            self.wifi_saved, self.wifi_ready,
+            ",\"wifi_saved\":{},\"wifi_ready\":{},\"ap_active\":{},\"time\":",
+            self.wifi_saved, self.wifi_ready, self.ap_active,
         )?;
         match self.time {
             Some(t) => write!(out, "\"{}\"", t)?,
@@ -328,6 +331,7 @@ mod tests {
             wifi_ssid: Some("Mokrot-5G"),
             wifi_saved: true,
             wifi_ready: true,
+            ap_active: false,
             time: Some("2026-11-13 12:00:00"),
             time_epoch: 1_763_035_200,
             tz_min: 180,
@@ -360,7 +364,7 @@ mod tests {
         let json = alloc::format!("{}", s);
         assert_eq!(
             json,
-            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"wifi_ready\":true,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"log_url\":\"http://192.168.0.236:8001/logs\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"wifi_attempts\":7,\"wifi_fails\":0,\"wifi_backoff_secs\":0,\"wifi_target_seen\":false,\"wifi_scan_seen_any\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"led_freq_pct\":100,\"led_amp_pct\":100,\"mode\":\"часы\"}"
+            "{\"uptime\":123,\"fw\":\"nixieclock-firmware\",\"version\":\"0.1.0\",\"ip\":\"192.168.0.123\",\"wifi_ssid\":\"Mokrot-5G\",\"wifi_saved\":true,\"wifi_ready\":true,\"ap_active\":false,\"time\":\"2026-11-13 12:00:00\",\"time_epoch\":1763035200,\"tz_min\":180,\"time_source\":\"ntp\",\"time_synced\":true,\"ota_state\":\"Valid\",\"pending\":false,\"confirmed\":true,\"latched\":false,\"busy\":false,\"ntp_server\":\"192.168.0.28\",\"log_url\":\"http://192.168.0.236:8001/logs\",\"gateway\":\"192.168.0.1\",\"dhcp_done\":true,\"wifi_attempts\":7,\"wifi_fails\":0,\"wifi_backoff_secs\":0,\"wifi_target_seen\":false,\"wifi_scan_seen_any\":true,\"dns\":\"192.168.0.1\",\"temp_mc\":25000,\"co2_ppm\":500,\"co2_temp_mc\":25000,\"v33_mv\":3300,\"v5_mv\":5050,\"v12_mv\":12100,\"led_color\":\"#a300cc\",\"led_color_set\":false,\"led_color_month\":\"#a300cc\",\"led_effect\":\"off\",\"led_freq_pct\":100,\"led_amp_pct\":100,\"mode\":\"часы\"}"
         );
         let s2 = StatusSnapshot {
             ip: None,
@@ -382,5 +386,7 @@ mod tests {
         assert!(json2.contains("\"temp_mc\":null"));
         assert!(json2.contains("\"co2_ppm\":null"));
         assert!(json2.contains("\"v12_mv\":null"));
+        let s3 = StatusSnapshot { ap_active: true, ..s };
+        assert!(alloc::format!("{}", s3).contains("\"ap_active\":true"));
     }
 }

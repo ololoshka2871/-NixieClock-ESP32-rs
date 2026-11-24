@@ -275,6 +275,7 @@ async fn handle<'a>(
                 wifi_ssid: if aw.ssid.is_empty() { None } else { Some(aw.ssid.as_str()) },
                 wifi_saved: aw.from_nvs,
                 wifi_ready: crate::WIFI_READY.load(Ordering::SeqCst),
+                ap_active: crate::netdev::ap_is_active(),
                 time_epoch: epoch,
                 tz_min: crate::tz::get(),
                 time: Some(civil_str.as_str()),

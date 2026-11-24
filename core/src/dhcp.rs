@@ -31,9 +31,11 @@ pub const OFF_YIADDR: usize = 16; // yiaddr (4 B)    16..20 («ваш» IP)
 pub const OFF_SIADDR: usize = 20; // siaddr (4 B)    20..24 (адрес сервера)
 pub const OFF_GIADDR: usize = 24; // giaddr (4 B)    24..28 (relay-агент)
 pub const OFF_CHADDR: usize = 28; // chaddr (16 B)   28..44, первые 6 — MAC
-pub const HEADER_LEN: usize = 240; // sname (64 B) 44..108, file (128 B) 108..240
-pub const OFF_COOKIE: usize = 240; // magic cookie (4 B) 240..244
-pub const OFF_OPTS: usize = 244; // начало TLV-опций
+// BOOTP-заголовок = 44 + sname(64) + file(128) = 236, НЕ 240.
+// 240 — уже первая опция после 4-байтового magic cookie.
+pub const HEADER_LEN: usize = 236; // sname (64 B) 44..108, file (128 B) 108..236
+pub const OFF_COOKIE: usize = 236; // magic cookie (4 B) 236..240
+pub const OFF_OPTS: usize = 240; // начало TLV-опций
 pub const MAGIC_COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
 pub const FLAG_BROADCAST: u16 = 0x8000;
 
@@ -58,13 +60,13 @@ pub const OPT_MSG_TYPE: u8 = 53; // len 1
 pub const OPT_SERVER_ID: u8 = 54; // len 4 (адрес сервера)
 pub const OPT_END: u8 = 255; // без байта длины
 
-/// Полный OFFER/ACK: 240 + cookie(4) + 53(3) + 54(6) + 51(6) + 1(6) + 3(6)
-/// + END(1) = 272 байт (TLV = код+длина+значение, опции len 4 занимают 6);
-/// NAK короче: 244 + 3 + 6 + 1 = 254. Дейтаграмма DHCP бывает до 576 B —
+/// Полный OFFER/ACK: 236 + cookie(4) + 53(3) + 54(6) + 51(6) + 1(6) + 3(6)
+/// + END(1) = 268 байт (TLV = код+длина+значение, опции len 4 занимают 6);
+/// NAK короче: 240 + 3 + 6 + 1 = 250. Дейтаграмма DHCP бывает до 576 B —
 /// буфер с запасом.
 pub const MAX_REPLY: usize = 276;
 
-const E_SHORT: &str = "dhcp: короче заголовка+cookie (244 B)";
+const E_SHORT: &str = "dhcp: короче заголовка+cookie (240 B)";
 const E_OP: &str = "dhcp: op не 1 и не 2";
 const E_HTYPE: &str = "dhcp: htype/hlen не 1/6 (Ethernet)";
 const E_COOKIE: &str = "dhcp: нет magic cookie 63 82 53 63";
@@ -117,7 +119,11 @@ fn parse_options(b: &[u8], r: &mut Request) -> Result<(), &'static str> {
             return Err(E_OPTS);
         }
         let len = b[i + 1] as usize;
-        if len == 0 || i + 2 + len > b.len() {
+        // Нулевая длина у неизвестной опции — норма (Android, например, шлёт
+        // пустые option 12/55). Такие опции просто игнорируем, а не бракую
+        // весь пакет: раньше из-за этого три первых DHCP-пакета телефона
+        // уходили в WARN "TLV-опции обрезаны".
+        if i + 2 + len > b.len() {
             return Err(E_OPTS);
         }
         let v = &b[i + 2..i + 2 + len];
@@ -190,7 +196,7 @@ pub fn parse_request(b: &[u8]) -> Result<Request, &'static str> {
 fn new_reply(req: &Request, server_ip: [u8; 4], yiaddr: [u8; 4]) -> Result<Vec<u8, MAX_REPLY>, &'static str> {
     let mut b: Vec<u8, MAX_REPLY> = Vec::new();
     // нуль-заполняем заголовок и слот cookie (индексация Vec ограничена len,
-    // поэтому cookie пишется только после расширения до 244)
+    // поэтому cookie пишется только после расширения до OFF_OPTS = 240)
     while b.len() < OFF_OPTS {
         b.push(0u8).map_err(|_| E_BUF)?;
     }
@@ -347,8 +353,13 @@ impl Lease {
                     return LeaseAction::Ignore;
                 }
                 match req.msg_type {
-                    DHCP_DISCOVER => LeaseAction::Ignore // шторм: не повторяем OFFER
-                    ,
+                    // Повторный DISCOVER — не молчим: первый OFFER мог потеряться
+                    // в эфире. Перевыставляем аренду и шлём свежий OFFER с новым
+                    // xid (клиент всё равно ещё не получил ACK).
+                    DHCP_DISCOVER => {
+                        self.offer_now(req, now, lease);
+                        LeaseAction::Offer
+                    }
                     DHCP_REQUEST if self.request_ok(req) => {
                         self.ack_now(req, now, lease);
                         LeaseAction::Ack
@@ -475,7 +486,7 @@ mod tests {
             None,
             &[55, 3, 1, 3, 6], // parameter request list: маска, шлюз, DNS
         );
-        assert_eq!(d.len(), 253);
+        assert_eq!(d.len(), 249);
         assert_eq!(d[0], OP_REQUEST);
         assert_eq!(d[1], HTYPE_ETHER);
         assert_eq!(d[2], HLEN_ETHER);
@@ -486,10 +497,10 @@ mod tests {
         assert_eq!(&d[12..16], &[0, 0, 0, 0][..]); // ciaddr = 0 в DISCOVER
         assert_eq!(&d[24..28], &[0, 0, 0, 0][..]); // giaddr = 0 (нет relay)
         assert_eq!(&d[28..34], &[0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5][..]); // chaddr
-        assert_eq!(&d[240..244], &[0x63, 0x82, 0x53, 0x63][..]); // magic cookie
-        assert_eq!(&d[244..247], &[53, 1, 1][..]); // opt 53 DISCOVER
-        assert_eq!(&d[247..252], &[55, 3, 1, 3, 6][..]);
-        assert_eq!(d[252], OPT_END);
+        assert_eq!(&d[236..240], &[0x63, 0x82, 0x53, 0x63][..]); // magic cookie
+        assert_eq!(&d[240..243], &[53, 1, 1][..]); // opt 53 DISCOVER
+        assert_eq!(&d[243..248], &[55, 3, 1, 3, 6][..]);
+        assert_eq!(d[248], OPT_END);
     }
 
     #[test]
@@ -512,7 +523,7 @@ mod tests {
         let d = client_msg(DHCP_DISCOVER, 0x8000, [0, 0, 0, 0], MAC, None, &[]);
         let r = parse(&d).unwrap();
         let o = build_offer(&r, CLIENT_IP, AP_IP, 3600).unwrap();
-        assert_eq!(o.len(), 272);
+        assert_eq!(o.len(), 268);
         assert_eq!(o[0], OP_REPLY);
         assert_eq!(o[1], HTYPE_ETHER);
         assert_eq!(o[2], HLEN_ETHER);
@@ -523,10 +534,10 @@ mod tests {
         assert_eq!(&o[24..28], &[0, 0, 0, 0][..]); // giaddr = 0
         assert_eq!(&o[28..34], &[0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5][..]); // chaddr зеркало
         assert!(o[34..44].iter().all(|&x| x == 0)); // хвост chaddr обнулён
-        assert!(o[44..240].iter().all(|&x| x == 0)); // sname + file обнулены
-        assert_eq!(&o[240..244], &[0x63, 0x82, 0x53, 0x63][..]);
+        assert!(o[44..236].iter().all(|&x| x == 0)); // sname + file обнулены
+        assert_eq!(&o[236..240], &[0x63, 0x82, 0x53, 0x63][..]);
         assert_eq!(
-            &o[244..272],
+            &o[240..268],
             &[
                 53, 1, 2, // OFFER
                 54, 4, 192, 168, 139, 1, // server id
@@ -554,13 +565,13 @@ mod tests {
         );
         let r = parse_request(&q).unwrap();
         let a = build_ack(&r, CLIENT_IP, AP_IP, 3600).unwrap();
-        assert_eq!(a.len(), 272);
+        assert_eq!(a.len(), 268);
         assert_eq!(&a[16..20], &[192, 168, 139, 100][..]);
         assert_eq!(
             &tlv_pairs(&a)[..6],
             &[(53, 1), (54, 4), (51, 4), (1, 4), (3, 4), (255, 0)]
         );
-        assert_eq!(a[246], DHCP_ACK);
+        assert_eq!(a[242], DHCP_ACK);
     }
 
     #[test]
@@ -568,10 +579,10 @@ mod tests {
         let q = client_msg(DHCP_REQUEST, 0, [0, 0, 0, 0], MAC, Some([10, 0, 0, 5]), &[]);
         let r = parse_request(&q).unwrap();
         let n = build_nak(&r, AP_IP).unwrap();
-        assert_eq!(n.len(), 254);
+        assert_eq!(n.len(), 250);
         assert_eq!(&n[16..20], &[0, 0, 0, 0][..]); // NAK: адрес не выдан
         assert_eq!(&n[4..8], &[0xDE, 0xAD, 0xBE, 0xEF][..]);
-        assert_eq!(&n[244..254], &[53, 1, 6, 54, 4, 192, 168, 139, 1, 255][..]);
+        assert_eq!(&n[240..250], &[53, 1, 6, 54, 4, 192, 168, 139, 1, 255][..]);
     }
 
     #[test]
@@ -602,14 +613,14 @@ mod tests {
 
         // слишком короткий
         assert_eq!(parse(&d[..100]), Err(E_SHORT));
-        assert_eq!(parse(&d[..243]), Err(E_SHORT));
+        assert_eq!(parse(&d[..239]), Err(E_SHORT));
 
         // ровно заголовок+cookie, ни одной опции (нет END)
-        assert_eq!(parse(&d[..244]), Err(E_OPTS));
+        assert_eq!(parse(&d[..240]), Err(E_OPTS));
 
         // испорченный cookie
         let mut bad = d.clone();
-        bad[241] = 0x00;
+        bad[OFF_COOKIE + 1] = 0x00;
         assert_eq!(parse(&bad), Err(E_COOKIE));
 
         // плохой op
@@ -655,6 +666,19 @@ mod tests {
     }
 
     #[test]
+    fn zero_length_options_are_tolerated() {
+        // Android шлёт опции с len=0 (hostname / request list). Раньше это
+        // давало E_OPTS и пакет отбрасывался, хотя type=1 разбирался бы.
+        let d = client_msg(DHCP_DISCOVER, 0, [0; 4], MAC, None, &[]);
+        let mut p: Vec<u8, 576> = Vec::new();
+        pushb(&mut p, &d[..OFF_OPTS]);
+        pushb(&mut p, &[12, 0, 53, 1, 1, 55, 0, 255]);
+        let r = parse(&p).unwrap();
+        assert_eq!(r.msg_type, DHCP_DISCOVER);
+        assert_eq!(r.chaddr, MAC);
+    }
+
+    #[test]
     fn request_captures_option_50() {
         let q = client_msg(DHCP_REQUEST, 0x8000, [0, 0, 0, 0], MAC, Some(CLIENT_IP), &[]);
         let r = parse_request(&q).unwrap();
@@ -685,13 +709,15 @@ mod tests {
     }
 
     #[test]
-    fn lease_discover_storm_coalesced() {
+    fn lease_discover_storm_reoffers() {
         let mut l = Lease::idle();
         assert_eq!(l.on(&req_of(DHCP_DISCOVER, MAC, [0; 4], None), 0, 3600), LeaseAction::Offer);
+        // Первый OFFER мог не дойти до клиента: каждый повторный DISCOVER
+        // обязан вызывать свежий OFFER, иначе Setup-AP остаётся без ответа.
         for t in 1..=5u64 {
-            assert_eq!(l.on(&req_of(DHCP_DISCOVER, MAC, [0; 4], None), t, 3600), LeaseAction::Ignore);
+            assert_eq!(l.on(&req_of(DHCP_DISCOVER, MAC, [0; 4], None), t, 3600), LeaseAction::Offer);
+            assert_eq!(l.state, LeaseState::Offered);
         }
-        assert_eq!(l.state, LeaseState::Offered);
     }
 
     #[test]

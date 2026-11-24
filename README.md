@@ -48,7 +48,7 @@ OTA/rollback-база — проверенный шаблон Home/esp32-ota-tem
 ## Структура (cargo workspace)
 
 - `core/` (`clock-core`) — `no_std` бизнес-логика без железа: модель времени, настройки, `framebuffer` дисплея, кодирование ламп. Хост-тесты: `cargo test -p clock-core` (x86, в CI).
-- `firmware/` (`nixieclock-firmware`) — esp-бинарь: WiFi STA+fallback AP, HTTP-страница настроек, OTA с rollback-guard, логи по WiFi, RTC DS1307, датчики, драйвер индикации.
+- `firmware/` (`nixieclock-firmware`) — esp-бинарь: WiFi STA + setup/fallback SoftAP, HTTP-страница настроек, OTA с rollback-guard, логи по WiFi, RTC DS1307, датчики, драйвер индикации.
 - `tools/ci_build.sh` — сборка + `espflash save-image` (app-only) + проверка OTA-образа (гейт размера слота 0xE0000 — флеш платы 2MB).
 - `partitions_2mb.csv` — фактическая разметка платы (nvs/otadata/ota_0@0x20000/ota_1@0x100000, слоты 0xE0000); `partitions_4mb.csv` — эталонная 4MB.
 - `HARDWARE.md`, `Schematic-lv.png` — паспорт железа оригинальных часов (пины, схема).
@@ -71,12 +71,12 @@ OTA/rollback-база — проверенный шаблон Home/esp32-ota-tem
 ## Сборка
 
 Тулчейн espup (`cargo +esp`), target `xtensa-esp32-none-elf` (см. [firmware/.cargo/config.toml](firmware/.cargo/config.toml)).
-`SSID`/`PASSWORD`/`LOG_URL` — через env ([env] в config.toml — плейсхолдеры для локальных сборок; реальные креды - инжектит CI).
+`SSID`/`PASSWORD`/`LOG_URL` — через env (необязательны). Пустой `SSID` после прошивки — норма: плата поднимает setup-SoftAP `Nixie-Clock-IN14` на `192.168.139.1`, креды задаются через WebGUI. Пароль AP берётся из `SOFTAP_PASS` (CI-секрет либо `[env]` в `firmware/.cargo/config.toml`).
 `bash tools/ci_build.sh` → `dist/app.elf` + `dist/app_ota.bin` + `dist/sha256.txt`.
 
 ## Выкатка на плату (2MB-разметка уже в flash, загрузчик с rollback прошит)
 
-1. CI/локально собирается app-only образ (magic E9, ≤ 917504 B).
+1. CI/локально собирается app-only образ (magic E9, ≤ 917504 B). В `firmware/.cargo/config.toml` включён `-Wl,--no-eh-frame-hdr`: unwind-заголовок (~12.8 КБ) не нужен своему `#[panic_handler]`, а без него образ не помещался в слот.
 2. Кладётся на OTA-сервер (VM `AAA.BBB.CCC.DDD:8000`).
 3. Плата: `GET /ota?url=...` (текущее демо) или `POST /api/ota {"url":...}` (новая прошивка) → слот → PendingVerify → confirm после диагностики → Valid; падение — авто-откат.
 
