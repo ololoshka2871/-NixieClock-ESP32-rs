@@ -58,7 +58,7 @@ NTP, цвет и подсветка, Wi-Fi креды + скан, OTA, логи,
 | POST  | `/wifi` | сохранение кредов (captive-portal) |
 | GET   | `/api/logs?include=all` | кольцо логов платы |
 | GET   | `/logs?follow=1` | поток логов |
-| POST  | `/api/log/set` | включить/выключить внешний коллектор |
+| POST  | `/api/logs/url` | коллектор логов: `{"url":"http://host:port/logs"}`; `{"url":""}` — выключить |
 | GET   | `/api/time` | время платы |
 | POST  | `/api/time` | ручная установка времени |
 | POST  | `/api/tz` | часовой пояс в минутах |
